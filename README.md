@@ -1,4 +1,4 @@
-# Spell Check Beta
+# Spell Check
 
 An isolated beta fork of the University of Phayao Thai PDF spell-check app. It uses Google OAuth, SQL Server, local file storage, and OpenRouter. The production app at this repository's root is not used or changed.
 
@@ -15,7 +15,7 @@ Do not commit `.env`. Start from [`.env.example`](.env.example); it contains pla
 ## Quick start
 
 ```sh
-cd spell-check-beta
+cd spell-check
 cp .env.example .env
 ```
 
