@@ -10,12 +10,13 @@ from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
 
+from .audit import record_audit
 from .auth import admin_user, authorized_google_user, current_user, exchange_code, google_profile, login_url, logout_url
 from .config import get_settings
 from .db import get_db
 from sqlalchemy import func
 
-from .models import DictionaryTerm, Job, JobStatus, SpellcheckFinding, User
+from .models import AuditEvent, DictionaryTerm, Job, JobStatus, SpellcheckFinding, User
 from .pipeline import create_highlighted_docx, create_highlighted_pdf, is_reportable_finding, text_check_findings
 from .schemas import DictionaryIn, JobOut, MeOut, SpellcheckFindingOut, TextCheckIn, UserAdminOut, UserPatch
 from .storage import delete_file, download_file, local_path, object_metadata, upload_file
@@ -77,11 +78,14 @@ def auth_callback(request: Request, code: str | None = None, state: str | None =
         token = exchange_code(code)
         user = authorized_google_user(db, google_profile(token["access_token"]))
         request.session["user_id"] = user.id
+        record_audit(db, AuditEvent.LOGIN_SUCCESS, actor_user_id=user.id)
         return RedirectResponse(settings.frontend_url)
     except HTTPException as exc:
         logger.warning("Google login failed: %s", exc.detail)
+        record_audit(db, AuditEvent.LOGIN_FAILED, detail=str(exc.detail)[:500])
     except Exception:
         logger.exception("Google login failed unexpectedly")
+        record_audit(db, AuditEvent.LOGIN_FAILED, detail="unexpected error")
     request.session.clear()
     return RedirectResponse(f"{settings.frontend_url}?login=failed")
 
@@ -152,6 +156,7 @@ def upload_job(file: UploadFile = File(...), user: User = Depends(current_user),
     db.add(job)
     db.commit()
     db.refresh(job)
+    record_audit(db, AuditEvent.JOB_SUBMITTED, actor_user_id=user.id, job_id=job.id, detail=f"type={ext}")
     return job_out(job, db)
 
 
@@ -237,6 +242,7 @@ def download_file_response(job_id: str, kind: str, user: User = Depends(current_
         "report": "text/markdown",
         "excel": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     }[kind]
+    record_audit(db, AuditEvent.RESULT_DOWNLOADED, actor_user_id=user.id, job_id=job.id, detail=f"kind={kind}")
     return FileResponse(
         path,
         media_type=media_type,
@@ -265,6 +271,7 @@ def delete_job(job_id: str, user: User = Depends(current_user), db: Session = De
         synchronize_session=False,
     )
     db.commit()
+    record_audit(db, AuditEvent.DOCUMENT_DELETED, actor_user_id=user.id, job_id=job.id, detail=f"filename={job.original_filename}"[:500])
     try:
         delete_file(f"jobs/{job.id}/highlighted.pdf")
         delete_file(f"jobs/{job.id}/highlighted.docx")
@@ -284,11 +291,17 @@ def update_user(user_id: int, patch: UserPatch, admin: User = Depends(admin_user
     user = db.get(User, user_id)
     if not user or not user.is_active:
         raise HTTPException(404, "User not found")
-    for field, value in patch.model_dump(exclude_unset=True).items():
+    fields = patch.model_dump(exclude_unset=True)
+    was_admin, was_blocked = user.is_admin, user.is_blocked
+    for field, value in fields.items():
         setattr(user, field, value)
     user.updated_by = admin.id
     db.commit()
     db.refresh(user)
+    if "is_admin" in fields and was_admin != user.is_admin:
+        record_audit(db, AuditEvent.ADMIN_ROLE_CHANGED, actor_user_id=admin.id, target_user_id=user.id, detail=f"isAdmin:{was_admin}->{user.is_admin}")
+    if "is_blocked" in fields and was_blocked != user.is_blocked:
+        record_audit(db, AuditEvent.USER_STATUS_CHANGED, actor_user_id=admin.id, target_user_id=user.id, detail=f"isBlocked:{was_blocked}->{user.is_blocked}")
     return user
 
 

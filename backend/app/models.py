@@ -21,6 +21,18 @@ class JobStatus(str, enum.Enum):
     FAILED = "FAILED"
 
 
+class AuditEvent(str, enum.Enum):
+    LOGIN_SUCCESS = "LOGIN_SUCCESS"
+    LOGIN_FAILED = "LOGIN_FAILED"
+    JOB_SUBMITTED = "JOB_SUBMITTED"
+    JOB_DONE = "JOB_DONE"
+    JOB_FAILED = "JOB_FAILED"
+    RESULT_DOWNLOADED = "RESULT_DOWNLOADED"
+    DOCUMENT_DELETED = "DOCUMENT_DELETED"
+    ADMIN_ROLE_CHANGED = "ADMIN_ROLE_CHANGED"
+    USER_STATUS_CHANGED = "USER_STATUS_CHANGED"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -73,6 +85,20 @@ class DictionaryTerm(Base):
     created_at: Mapped[datetime] = mapped_column("createdAt", DateTime, server_default=func.now())
     updated_by: Mapped[int | None] = mapped_column("updatedBy", ForeignKey("users.id"))
     updated_at: Mapped[datetime] = mapped_column("updateAt", DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class AuditLog(Base):
+    """Append-only security/business audit trail. No update/delete by design:
+    do not add updated_by/updated_at/is_active columns here."""
+    __tablename__ = "auditLogs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    event: Mapped[str] = mapped_column(Unicode(50), index=True)
+    actor_user_id: Mapped[int | None] = mapped_column("actorUserId", ForeignKey("users.id"), index=True)
+    target_user_id: Mapped[int | None] = mapped_column("targetUserId", ForeignKey("users.id"))
+    job_id: Mapped[str | None] = mapped_column("jobId", Unicode(36), ForeignKey("jobs.id"), index=True)
+    detail: Mapped[str | None] = mapped_column(Unicode(500))
+    created_at: Mapped[datetime] = mapped_column("createdAt", DateTime, server_default=func.now(), index=True)
 
 
 class SpellcheckFinding(Base):

@@ -20,8 +20,9 @@ from pypdf import PdfReader
 from sqlalchemy.orm import Session
 from typhoon_ocr import prepare_ocr_messages
 
+from .audit import record_audit
 from .config import get_settings
-from .models import DictionaryTerm, Job, JobStatus, SpellcheckFinding
+from .models import AuditEvent, DictionaryTerm, Job, JobStatus, SpellcheckFinding
 from .storage import download_file, upload_file
 
 MAX_CHARS = 15000
@@ -665,6 +666,11 @@ def run_job(db: Session, job: Job):
             db.commit()
             unit_word = "หน่วย" if is_docx else "หน้า"
             log(db, job, f"ประมวลผลเอกสารสำเร็จ {total_units} {unit_word} ใช้เวลา {job.elapsed_seconds} วินาที")
+            finding_count = db.query(SpellcheckFinding).filter(SpellcheckFinding.job_id == job.id, SpellcheckFinding.is_active == True).count()
+            record_audit(
+                db, AuditEvent.JOB_DONE, actor_user_id=job.user_id, job_id=job.id,
+                detail=f"findings={finding_count};elapsed={job.elapsed_seconds}s",
+            )
     except Exception as exc:
         detail = f"{error_summary(exc)}\n\n{traceback.format_exc()}"
         db.rollback()
@@ -674,3 +680,7 @@ def run_job(db: Session, job: Job):
         job.updated_by = job.user_id
         db.commit()
         log(db, job, job.error_text, "ERROR", detail)
+        record_audit(
+            db, AuditEvent.JOB_FAILED, actor_user_id=job.user_id, job_id=job.id,
+            detail=error_summary(exc)[:500],
+        )
