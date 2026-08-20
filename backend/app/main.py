@@ -16,12 +16,21 @@ from .db import get_db
 from sqlalchemy import func
 
 from .models import DictionaryTerm, Job, JobStatus, SpellcheckFinding, User
-from .pipeline import create_highlighted_pdf, is_reportable_finding, text_check_findings
+from .pipeline import create_highlighted_docx, create_highlighted_pdf, is_reportable_finding, text_check_findings
 from .schemas import DictionaryIn, JobOut, MeOut, SpellcheckFindingOut, TextCheckIn, UserAdminOut, UserPatch
 from .storage import delete_file, download_file, local_path, object_metadata, upload_file
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+
+DOC_CONTENT_TYPES = {
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+
+
+def doc_content_type(filename: str) -> str:
+    return DOC_CONTENT_TYPES.get(Path(filename).suffix.lower(), "application/pdf")
 allowed_origins = [settings.frontend_url]
 if settings.environment == "dev":
     allowed_origins.extend(["http://localhost:5173", "http://127.0.0.1:5173"])
@@ -130,14 +139,15 @@ def visible_job(job_id: str, user: User, db: Session) -> Job:
 
 @app.post("/api/jobs", response_model=JobOut)
 def upload_job(file: UploadFile = File(...), user: User = Depends(current_user), db: Session = Depends(get_db)):
-    if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(400, "PDF only")
-    with NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+    ext = Path(file.filename).suffix.lower()
+    if ext not in DOC_CONTENT_TYPES:
+        raise HTTPException(400, "PDF or DOCX only")
+    with NamedTemporaryFile(delete=False, suffix=ext) as tmp:
         tmp.write(file.file.read())
         tmp_path = Path(tmp.name)
     job_id = str(uuid.uuid4())
     key = f"jobs/{job_id}/{file.filename}"
-    upload_file(tmp_path, key, "application/pdf")
+    upload_file(tmp_path, key, DOC_CONTENT_TYPES[ext])
     job = Job(id=job_id, user_id=user.id, original_filename=file.filename, original_key=key, created_by=user.id, updated_by=user.id)
     db.add(job)
     db.commit()
@@ -164,7 +174,9 @@ def download(job_id: str, kind: str, user: User = Depends(current_user), db: Ses
     if kind == "highlighted":
         if job.status != JobStatus.DONE.value:
             raise HTTPException(409, "Job is not ready")
-        key = f"jobs/{job.id}/highlighted.pdf"
+        is_docx = Path(job.original_filename).suffix.lower() == ".docx"
+        ext = "docx" if is_docx else "pdf"
+        key = f"jobs/{job.id}/highlighted.{ext}"
         metadata = object_metadata(key)
         if not metadata or not {"matched-findings", "total-findings"} <= metadata.keys():
             findings = db.query(SpellcheckFinding).filter(
@@ -174,18 +186,21 @@ def download(job_id: str, kind: str, user: User = Depends(current_user), db: Ses
             findings = [item for item in findings if is_reportable_finding(item.found, item.suggestion)]
             # ponytail: synchronous MVP; move to the worker if large PDFs block the API.
             with TemporaryDirectory() as tmp:
-                source = Path(tmp) / "original.pdf"
-                highlighted = Path(tmp) / "highlighted.pdf"
+                source = Path(tmp) / f"original.{ext}"
+                highlighted = Path(tmp) / f"highlighted.{ext}"
                 download_file(job.original_key, source)
-                annotations, matched = create_highlighted_pdf(source, findings, highlighted)
+                if is_docx:
+                    annotations, matched = create_highlighted_docx(source, findings, highlighted)
+                else:
+                    annotations, matched = create_highlighted_pdf(source, findings, highlighted)
                 if not annotations:
-                    raise HTTPException(422, "ไม่พบคำผิดใน text layer ของ PDF จึงยังสร้างไฟล์ไฮไลต์ไม่ได้")
+                    raise HTTPException(422, "ไม่พบคำผิดใน text ของเอกสาร จึงยังสร้างไฟล์ไฮไลต์ไม่ได้")
                 metadata = {
                     "annotations": annotations,
                     "matched-findings": matched,
                     "total-findings": len(findings),
                 }
-                upload_file(highlighted, key, "application/pdf", metadata)
+                upload_file(highlighted, key, doc_content_type(job.original_filename), metadata)
         matched = int(metadata["matched-findings"])
         total = int(metadata["total-findings"])
         return {
@@ -203,7 +218,8 @@ def download(job_id: str, kind: str, user: User = Depends(current_user), db: Ses
 @app.get("/api/jobs/{job_id}/file/{kind}")
 def download_file_response(job_id: str, kind: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
     job = visible_job(job_id, user, db)
-    key = f"jobs/{job.id}/highlighted.pdf" if kind == "highlighted" else {
+    is_docx = Path(job.original_filename).suffix.lower() == ".docx"
+    key = (f"jobs/{job.id}/highlighted.{'docx' if is_docx else 'pdf'}") if kind == "highlighted" else {
         "original": job.original_key,
         "ocr": job.ocr_key,
         "report": job.report_key,
@@ -215,8 +231,8 @@ def download_file_response(job_id: str, kind: str, user: User = Depends(current_
     if not path.is_file():
         raise HTTPException(404, "File not ready")
     media_type = {
-        "original": "application/pdf",
-        "highlighted": "application/pdf",
+        "original": doc_content_type(job.original_filename),
+        "highlighted": doc_content_type(job.original_filename),
         "ocr": "text/markdown",
         "report": "text/markdown",
         "excel": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -251,9 +267,10 @@ def delete_job(job_id: str, user: User = Depends(current_user), db: Session = De
     db.commit()
     try:
         delete_file(f"jobs/{job.id}/highlighted.pdf")
+        delete_file(f"jobs/{job.id}/highlighted.docx")
     except Exception:
         # ponytail: cache cleanup must not turn a completed DB deletion into a user-visible failure.
-        logger.exception("Failed to delete highlighted PDF cache for job %s", job.id)
+        logger.exception("Failed to delete highlighted file cache for job %s", job.id)
     return {"ok": True}
 
 

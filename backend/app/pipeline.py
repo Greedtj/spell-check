@@ -11,6 +11,8 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from docx import Document
+from docx.enum.text import WD_COLOR_INDEX
 from openai import OpenAI
 from openpyxl import Workbook
 import fitz
@@ -23,6 +25,8 @@ from .models import DictionaryTerm, Job, JobStatus, SpellcheckFinding
 from .storage import download_file, upload_file
 
 MAX_CHARS = 15000
+PAGE_CONCURRENCY = 3  # ลดจาก 10 เพื่อไม่ให้ยิง OpenRouter พร้อมกันจนชน rate limit (free tier 20 req/min)
+JOB_TIMEOUT_SECONDS = 600  # ห้ามงานค้างสถานะ PROCESSING เกิน 10 นาที
 logger = logging.getLogger(__name__)
 
 THAI_MARKS = frozenset("\u0e31\u0e34\u0e35\u0e36\u0e37\u0e38\u0e39\u0e3a\u0e47\u0e48\u0e49\u0e4a\u0e4b\u0e4c\u0e4d\u0e4e")
@@ -144,6 +148,104 @@ def create_highlighted_pdf(input_path: Path, findings, output_path: Path) -> tup
         doc.close()
 
 
+def highlight_run_matches(paragraph, needle: str) -> int:
+    """Highlight runs whose text contains needle verbatim. Matches split across
+    run boundaries (different formatting) are not detected, same limitation as
+    PDF's page.search_for()."""
+    count = 0
+    for run in paragraph.runs:
+        if needle and needle in run.text:
+            run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+            count += run.text.count(needle)
+    return count
+
+
+def locate_docx_paragraphs(doc: Document, location: str):
+    """Resolve a location label (from process_docx_unit) back to the docx
+    paragraph object(s) it came from, so highlighting stays targeted."""
+    match = re.match(r"^¶(\d+)$", location or "")
+    if match:
+        index = int(match.group(1)) - 1
+        if 0 <= index < len(doc.paragraphs):
+            return [doc.paragraphs[index]]
+        return []
+    match = re.match(r"^Table(\d+) R(\d+)C(\d+)$", location or "")
+    if match:
+        t_index, r_index, c_index = (int(value) - 1 for value in match.groups())
+        if t_index < len(doc.tables):
+            table = doc.tables[t_index]
+            if r_index < len(table.rows):
+                row = table.rows[r_index]
+                if c_index < len(row.cells):
+                    return list(row.cells[c_index].paragraphs)
+    return None
+
+
+def all_docx_paragraphs(doc: Document):
+    paragraphs = list(doc.paragraphs)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                paragraphs.extend(cell.paragraphs)
+    return paragraphs
+
+
+def create_highlighted_docx(input_path: Path, findings, output_path: Path) -> tuple[int, int]:
+    """Highlight exact matches in a DOCX and return annotation and matched-finding counts."""
+    doc = Document(str(input_path))
+    count = 0
+    matched = 0
+    for finding in findings:
+        paragraphs = locate_docx_paragraphs(doc, finding.page)
+        if paragraphs is None:
+            paragraphs = all_docx_paragraphs(doc)
+        found_here = 0
+        for paragraph in paragraphs:
+            if finding.found in paragraph.text:
+                found_here += highlight_run_matches(paragraph, finding.found)
+        if found_here:
+            matched += 1
+            count += found_here
+    doc.save(output_path)
+    return count, matched
+
+
+def iter_docx_units(path: Path) -> list[tuple[str, str]]:
+    """Extract (location, text) units from paragraphs and table cells, in
+    document order. Nested tables and merged-cell duplicates are not
+    de-duplicated (best-effort location tracking)."""
+    doc = Document(str(path))
+    units = []
+    for index, paragraph in enumerate(doc.paragraphs, 1):
+        text = paragraph.text.strip()
+        if text:
+            units.append((f"¶{index}", text))
+    for t_index, table in enumerate(doc.tables, 1):
+        for r_index, row in enumerate(table.rows, 1):
+            for c_index, cell in enumerate(row.cells, 1):
+                text = cell.text.strip()
+                if text:
+                    units.append((f"Table{t_index} R{r_index}C{c_index}", text))
+    return units
+
+
+def process_docx_unit(order: int, location: str, text: str, settings, fixes: list[tuple[str, str]]) -> tuple[int, str, str, list[str], str]:
+    """Same normalize/chunk/dictionary/LLM steps as process_page, for a pre-extracted docx unit."""
+    text = normalize_thai(text)
+    chunks = chunk_text(text, MAX_CHARS)
+    lines = dictionary_lines_mem(text, fixes)
+
+    for part, chunk in enumerate(chunks, 1):
+        llm = clean_report(ai_check(chunk, location, part, len(chunks)))
+        if llm != "ไม่พบคำผิดชัดเจน":
+            lines.append(llm)
+
+    unit_report = clean_report("\n".join(lines))
+    ocr_chunk = f"\n\n<!-- {location} -->\n\n{text.strip()}\n"
+
+    return order, location, ocr_chunk, lines, unit_report
+
+
 def split_long_block(block: str, limit: int) -> list[str]:
     parts = []
     text = block.strip()
@@ -195,8 +297,12 @@ def error_summary(exc: Exception) -> str:
     if "String or binary data would be truncated" in text:
         column = re.search(r"column '([^']+)'", text)
         return f"บันทึกข้อมูลไม่สำเร็จ: ข้อมูลยาวเกินขนาดคอลัมน์ฐานข้อมูล{f' {column.group(1)}' if column else ''}"
+    if isinstance(exc, RuntimeError) and "COPILOT_STUDIO_SECRET" in text:
+        return "ยังไม่ได้ตั้งค่า COPILOT_STUDIO_SECRET สำหรับ AI_PROVIDER=copilot_studio"
     if isinstance(exc, urllib.error.HTTPError):
         return f"ติดต่อ API ภายนอกไม่สำเร็จ: HTTP {exc.code} {exc.reason}"
+    if getattr(exc, "status_code", None) == 429 or type(exc).__name__ == "RateLimitError":
+        return "OpenRouter จำกัดอัตราคำขอ (rate limit) ชั่วคราว กรุณาลองใหม่อีกครั้งภายหลัง"
     if getattr(exc, "status_code", None):
         return f"ติดต่อ API ภายนอกไม่สำเร็จ: HTTP {exc.status_code}"
     if type(exc).__name__ in {"APIConnectionError", "APITimeoutError"}:
@@ -268,6 +374,103 @@ def openrouter_check(text: str, page: int, part: int = 1, total: int = 1) -> str
     return (response.choices[0].message.content or "ไม่พบคำผิดชัดเจน").strip()
 
 
+DIRECTLINE_BASE = "https://directline.botframework.com/v3/directline"
+COPILOT_STUDIO_CALL_TIMEOUT = 30
+COPILOT_STUDIO_POLL_TIMEOUT_SECONDS = 20
+COPILOT_STUDIO_USER_ID = "spell-check-backend"
+
+
+def _directline_call(method: str, path: str, secret: str, body: dict | None = None) -> dict:
+    url = f"{DIRECTLINE_BASE}{path}"
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    request = urllib.request.Request(
+        url,
+        data=data,
+        method=method,
+        headers={"Authorization": f"Bearer {secret}", "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=COPILOT_STUDIO_CALL_TIMEOUT) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def copilot_studio_check(text: str, page, part: int = 1, total: int = 1) -> str:
+    """Send the same spell-check prompt used for OpenRouter to a published
+    Copilot Studio agent over Direct Line (same flow as the connectivity
+    test), and return its raw text reply for clean_report() to parse."""
+    settings = get_settings()
+    secret = settings.copilot_studio_secret
+    if not secret:
+        raise RuntimeError("COPILOT_STUDIO_SECRET is not set")
+
+    clean_text = re.sub(r"\b25\d{2}\b", "", text)
+    prompt = f"""ตรวจคำผิดภาษาไทยจาก OCR หน้า {page} (ช่วงที่ {part}/{total})
+
+ข้อความ:
+```text
+{clean_text}
+```"""
+    full_message = f"{SYSTEM_PROMPT}\n\n{prompt}"
+
+    logger.info("Copilot Studio: checking page=%s part=%s/%s (%d chars)", page, part, total, len(text))
+    conversation = _directline_call("POST", "/conversations", secret)
+    conversation_id = conversation["conversationId"]
+
+    _directline_call(
+        "POST",
+        f"/conversations/{conversation_id}/activities",
+        secret,
+        body={"type": "message", "from": {"id": COPILOT_STUDIO_USER_ID}, "text": full_message, "locale": "th-TH"},
+    )
+
+    watermark = None
+    deadline = time.time() + COPILOT_STUDIO_POLL_TIMEOUT_SECONDS
+    while time.time() < deadline:
+        time.sleep(1.5)
+        path = f"/conversations/{conversation_id}/activities"
+        if watermark:
+            path += f"?watermark={watermark}"
+        payload = _directline_call("GET", path, secret)
+        watermark = payload.get("watermark") or watermark
+        for activity in payload.get("activities", []):
+            if activity.get("type") == "message" and activity.get("from", {}).get("id") != COPILOT_STUDIO_USER_ID and activity.get("text"):
+                logger.info("Copilot Studio: got reply for page=%s part=%s/%s", page, part, total)
+                return activity["text"].strip()
+
+    raise TimeoutError(f"Copilot Studio ไม่ตอบกลับภายใน {COPILOT_STUDIO_POLL_TIMEOUT_SECONDS} วินาที")
+
+
+def ai_check(text: str, page, part: int = 1, total: int = 1) -> str:
+    """Provider dispatcher: AI_PROVIDER=copilot_studio | openrouter (default).
+    OpenRouter stays the default/fallback provider; a Copilot Studio failure
+    fails this unit the same way an OpenRouter failure already does (no
+    silent per-call failover, so provider comparisons stay honest). Copilot
+    Studio occasionally answers "ไม่พบคำผิดชัดเจน" even for text with real
+    typos (non-deterministic agent response, confirmed by repeated identical
+    calls) -- a single zero-finding response is retried once with a fresh
+    Direct Line conversation before being accepted."""
+    settings = get_settings()
+    provider = (settings.ai_provider or "openrouter").strip().lower()
+    if provider == "copilot_studio":
+        try:
+            first = copilot_studio_check(text, page, part, total)
+            if clean_report(first) != "ไม่พบคำผิดชัดเจน":
+                return first
+            logger.info(
+                "Copilot Studio: zero findings on first attempt (page=%s part=%s/%s), retrying once with a new conversation",
+                page, part, total,
+            )
+            second = copilot_studio_check(text, page, part, total)
+            if clean_report(second) != "ไม่พบคำผิดชัดเจน":
+                logger.info("Copilot Studio: retry found results (page=%s part=%s/%s)", page, part, total)
+                return second
+            logger.info("Copilot Studio: retry also returned zero findings (page=%s part=%s/%s), keeping zero", page, part, total)
+            return second
+        except Exception:
+            logger.exception("Copilot Studio check failed (page=%s part=%s/%s)", page, part, total)
+            raise
+    return openrouter_check(text, page, part, total)
+
+
 def clean_report(text: str) -> str:
     kept = []
     for line in text.splitlines():
@@ -297,7 +500,7 @@ def clean_report(text: str) -> str:
 def text_check_findings(text: str, fixes: list[tuple[str, str]]) -> list[dict[str, str]]:
     text = normalize_thai(text)
     lines = dictionary_lines_mem(text, fixes)
-    llm = clean_report(openrouter_check(text, 1))
+    llm = clean_report(ai_check(text, 1))
     if llm != "ไม่พบคำผิดชัดเจน":
         lines.append(llm)
     findings = []
@@ -328,14 +531,14 @@ def process_page(pdf_path: Path, page: int, pages: int, settings, fixes: list[tu
     
     # 5. LLM checks for all chunks
     for part, chunk in enumerate(chunks, 1):
-        llm = clean_report(openrouter_check(chunk, page, part, len(chunks)))
+        llm = clean_report(ai_check(chunk, page, part, len(chunks)))
         if llm != "ไม่พบคำผิดชัดเจน":
             lines.append(llm)
             
     page_report = clean_report("\n".join(lines))
     ocr_chunk = f"\n\n<!-- page {page} -->\n\n{text.strip()}\n"
     
-    return page, ocr_chunk, lines, page_report
+    return page, page, ocr_chunk, lines, page_report
 
 
 def report_to_excel(report: str, path: Path):
@@ -376,45 +579,69 @@ def run_job(db: Session, job: Job):
     try:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            pdf = root / job.original_filename
-            download_file(job.original_key, pdf)
-            pages = len(PdfReader(str(pdf)).pages)
-            job.pages = pages
-            db.commit()
+            source = root / job.original_filename
+            download_file(job.original_key, source)
+            is_docx = source.suffix.lower() == ".docx"
 
             # Load fixes in-memory
             fixes = [(term.wrong, term.correct) for term in db.query(DictionaryTerm).filter(DictionaryTerm.is_active == True).order_by(DictionaryTerm.wrong).all()]
 
             settings = get_settings()
 
-            # Submit concurrent page processing
+            # Submit concurrent unit processing (concurrency capped to avoid OpenRouter rate limit)
             futures = {}
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                for page in range(1, pages + 1):
-                    futures[executor.submit(process_page, pdf, page, pages, settings, fixes)] = page
-                
-                results = []
-                for future in as_completed(futures):
-                    page = futures[future]
-                    try:
-                        res = future.result()
-                        results.append(res)
-                        log(db, job, f"Finished processing page {page}/{pages}")
-                    except Exception as exc:
-                        detail = f"{error_summary(exc)}\n\n{traceback.format_exc()}"
-                        log(db, job, f"ประมวลผลหน้า {page} ไม่สำเร็จ: {error_summary(exc)}", "ERROR", detail)
-                        log(db, job, f"Error processing page {page}: {exc}", "ERROR")
-                        raise exc
+            executor = ThreadPoolExecutor(max_workers=PAGE_CONCURRENCY)
+            try:
+                if is_docx:
+                    units = iter_docx_units(source)
+                    total_units = len(units)
+                    job.pages = total_units
+                    db.commit()
+                    for order, (location, text) in enumerate(units, 1):
+                        futures[executor.submit(process_docx_unit, order, location, text, settings, fixes)] = location
+                else:
+                    pages = len(PdfReader(str(source)).pages)
+                    total_units = pages
+                    job.pages = pages
+                    db.commit()
+                    for page in range(1, pages + 1):
+                        futures[executor.submit(process_page, source, page, pages, settings, fixes)] = page
 
-            # Sort results by page number
+                results = []
+                try:
+                    for future in as_completed(futures, timeout=JOB_TIMEOUT_SECONDS):
+                        label = futures[future]
+                        try:
+                            res = future.result()
+                            results.append(res)
+                            if is_docx:
+                                log(db, job, f"Finished processing {label} ({len(results)}/{total_units})")
+                            else:
+                                log(db, job, f"Finished processing page {label}/{total_units}")
+                        except Exception as exc:
+                            detail = f"{error_summary(exc)}\n\n{traceback.format_exc()}"
+                            if is_docx:
+                                log(db, job, f"ประมวลผล {label} ไม่สำเร็จ: {error_summary(exc)}", "ERROR", detail)
+                                log(db, job, f"Error processing {label}: {exc}", "ERROR")
+                            else:
+                                log(db, job, f"ประมวลผลหน้า {label} ไม่สำเร็จ: {error_summary(exc)}", "ERROR", detail)
+                                log(db, job, f"Error processing page {label}: {exc}", "ERROR")
+                            raise exc
+                except TimeoutError:
+                    log(db, job, f"หมดเวลาประมวลผล: เกิน {JOB_TIMEOUT_SECONDS} วินาที (อาจติด rate limit จาก OpenRouter)", "ERROR")
+                    raise TimeoutError(f"งานใช้เวลานานเกิน {JOB_TIMEOUT_SECONDS} วินาที ระบบยกเลิกงานเพื่อไม่ให้ค้าง")
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
+
+            # Sort results by original order (page number, or docx unit order)
             results.sort(key=lambda x: x[0])
 
             ocr_chunks = []
             report = [f"# Spellcheck Report: {job.original_filename}", ""]
-            
-            for page, ocr_chunk, lines, page_report in results:
+
+            for _, label, ocr_chunk, lines, unit_report in results:
                 ocr_chunks.append(ocr_chunk)
-                report.append(f"## Page {page}\n\n{page_report}\n")
+                report.append(f"## Page {label}\n\n{unit_report}\n")
 
             ocr_path = root / f"{Path(job.original_filename).stem}.ocr.md"
             report_path = root / f"{Path(job.original_filename).stem}.spellcheck.md"
@@ -436,7 +663,8 @@ def run_job(db: Session, job: Job):
             job.elapsed_seconds = int(time.time() - started)
             job.updated_by = job.user_id
             db.commit()
-            log(db, job, f"ประมวลผลเอกสารสำเร็จ {pages} หน้า ใช้เวลา {job.elapsed_seconds} วินาที")
+            unit_word = "หน่วย" if is_docx else "หน้า"
+            log(db, job, f"ประมวลผลเอกสารสำเร็จ {total_units} {unit_word} ใช้เวลา {job.elapsed_seconds} วินาที")
     except Exception as exc:
         detail = f"{error_summary(exc)}\n\n{traceback.format_exc()}"
         db.rollback()

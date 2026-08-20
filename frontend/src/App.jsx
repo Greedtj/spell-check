@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client'
 import { 
   BookOpen, Download, FileSpreadsheet, FileText, History, LibraryBig, LogOut,
   Plus, Search, Upload, Users, CheckCircle2, Info, Check, ChevronRight,
-  ChevronLeft, ChevronDown, Home, Timer, AlertCircle, Clock3, Eye, Trash2, Pencil, Menu, MoreHorizontal
+  ChevronLeft, ChevronDown, Home, Timer, AlertCircle, Clock3, Eye, Trash2, Pencil, Menu, MoreHorizontal, Loader2
 } from 'lucide-react'
 import './styles.css'
 
@@ -122,6 +122,10 @@ async function mockRequest(path, options = {}) {
   ]
   if (path.includes('/download/')) return { url: '#' }
   return {}
+}
+
+function fileExtLabel(filename) {
+  return filename?.toLowerCase().endsWith('.docx') ? 'DOCX' : 'PDF'
 }
 
 function formatDuration(seconds) {
@@ -287,7 +291,7 @@ function App() {
         {error && <p className="mx-6 mt-4 rounded-xl border border-[var(--error)] bg-[var(--error-bg)] px-4 py-3 text-sm text-[var(--error)] font-semibold">{error}</p>}
         <div className="flex-1 overflow-y-auto no-scrollbar">
           {view === 'dashboard' && <Dashboard jobs={jobs} setView={setView} me={me} setError={setError} onFindings={showFindings} />}
-          {view === 'document-check' && <DocumentCheck reload={load} setError={setError} setAlert={setAlert} />}
+          {view === 'document-check' && <DocumentCheck reload={load} setError={setError} setAlert={setAlert} onFindings={showFindings} />}
           {view === 'history' && <HistoryView jobs={filtered} query={query} setQuery={setQuery} setError={setError} onDelete={deleteJob} onFindings={showFindings} />}
           {view === 'findings' && <FindingsView job={selectedJob} setView={setView} setError={setError} />}
           {me.is_admin && view === 'admin' && <Admin setAlert={setAlert} setConfirm={setConfirm} />}
@@ -651,7 +655,7 @@ function Dashboard({ jobs, setView, me, setError, onFindings }) {
         <div>
           <strong className="block font-bold">เคล็ดลับการใช้งาน</strong>
           <span className="block mt-0.5 text-xs text-blue-700 font-semibold leading-relaxed">
-            ระบบจะตรวจสอบคำผิดอัตโนมัติหลังจากอัปโหลดไฟล์ PDF เจ้าหน้าที่และอาจารย์สามารถดูรายการคำผิดและดาวน์โหลดรายงานฉบับสมบูรณ์ (Original/Excel) เมื่อประมวลผลเสร็จสิ้น
+            ระบบจะตรวจสอบคำผิดอัตโนมัติหลังจากอัปโหลดไฟล์ PDF หรือ DOCX เจ้าหน้าที่และอาจารย์สามารถดูรายการคำผิดและดาวน์โหลดรายงานฉบับสมบูรณ์ (Original/Excel) เมื่อประมวลผลเสร็จสิ้น
           </span>
         </div>
       </div>
@@ -659,26 +663,30 @@ function Dashboard({ jobs, setView, me, setError, onFindings }) {
   )
 }
 
-function DocumentCheck({ reload, setError, setAlert }) {
+function DocumentCheck({ reload, setError, setAlert, onFindings }) {
   const [mode, setMode] = useState('upload') // 'upload' | 'text'
 
-  // --- Upload mode state/logic (unchanged behavior) ---
+  // --- Upload mode state/logic ---
   const uploadRef = useRef(null)
   const [dragActive, setDragActive] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [activeJob, setActiveJob] = useState(null)
+  const [lastFile, setLastFile] = useState(null)
 
   async function submitFile(file) {
     if (!file) return
-    if (file.type !== 'application/pdf') {
-      setAlert({ type: 'error', message: 'กรุณาอัปโหลดไฟล์ PDF เท่านั้น' })
+    const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase()
+    if (ext !== '.pdf' && ext !== '.docx') {
+      setAlert({ type: 'error', message: 'กรุณาอัปโหลดไฟล์ PDF หรือ DOCX เท่านั้น' })
       return
     }
     const form = new FormData()
     form.append('file', file)
     setUploading(true)
     try {
-      await request('/api/jobs', { method: 'POST', body: form })
-      setAlert({ type: 'success', message: 'อัปโหลดเอกสารสำเร็จ กำลังประมวลผล...' })
+      const job = await request('/api/jobs', { method: 'POST', body: form })
+      setLastFile(file)
+      setActiveJob(job)
       await reload()
     } catch (err) {
       setError(err.message)
@@ -709,6 +717,32 @@ function DocumentCheck({ reload, setError, setAlert }) {
     e.stopPropagation()
     setDragActive(false)
     await submitFile(e.dataTransfer?.files?.[0])
+  }
+
+  // Poll the job's own status endpoint while it's still queued/running.
+  useEffect(() => {
+    if (!activeJob || (activeJob.status !== 'PENDING' && activeJob.status !== 'PROCESSING')) return
+    const id = setInterval(async () => {
+      try {
+        const job = await request(`/api/jobs/${activeJob.id}`)
+        setActiveJob(job)
+        if (job.status === 'DONE' || job.status === 'FAILED') {
+          reload()
+        }
+      } catch {
+        // job may have been removed elsewhere; stop polling silently
+      }
+    }, 3000)
+    return () => clearInterval(id)
+  }, [activeJob?.id, activeJob?.status])
+
+  function resetUpload() {
+    setActiveJob(null)
+    setLastFile(null)
+  }
+
+  function retryUpload() {
+    if (lastFile) submitFile(lastFile)
   }
 
   // --- Text mode state/logic (unchanged behavior, merged from ตรวจข้อความ) ---
@@ -770,7 +804,7 @@ function DocumentCheck({ reload, setError, setAlert }) {
           {tabButton('text', 'วางข้อความ')}
         </div>
 
-        {mode === 'upload' && (
+        {mode === 'upload' && !activeJob && (
           <div className="space-y-3">
             {/* Upload dropzone: file type is detected automatically */}
             <div
@@ -787,7 +821,7 @@ function DocumentCheck({ reload, setError, setAlert }) {
                   : 'border-blue-200 bg-[#f8faff] hover:bg-blue-50/50'
               }`}
             >
-              <input ref={uploadRef} type="file" accept="application/pdf" onChange={upload} hidden disabled={uploading} />
+              <input ref={uploadRef} type="file" accept=".pdf,.docx" onChange={upload} hidden disabled={uploading} />
 
               <div className="w-14 h-14 rounded-full bg-[#1d55b6] flex items-center justify-center mb-4 shadow-sm shadow-blue-200">
                 <Upload size={22} className="text-white" />
@@ -803,6 +837,59 @@ function DocumentCheck({ reload, setError, setAlert }) {
             </div>
 
             <p className="text-xs text-gray-400 font-medium text-center">ดูผลลัพธ์ได้ที่ประวัติการตรวจสอบ</p>
+          </div>
+        )}
+
+        {mode === 'upload' && activeJob && (activeJob.status === 'PENDING' || activeJob.status === 'PROCESSING') && (
+          <div className="border border-gray-200 rounded-2xl p-6 bg-white shadow-sm text-center space-y-4">
+            <div className="mx-auto w-14 h-14 rounded-full bg-blue-50 flex items-center justify-center">
+              <Loader2 size={24} className="text-[#1d55b6] animate-spin" />
+            </div>
+            <div>
+              <h3 className="text-base font-bold text-gray-900 truncate" title={activeJob.original_filename}>{activeJob.original_filename}</h3>
+              <p className="text-sm text-gray-500 mt-1 font-semibold">กำลังตรวจเอกสาร...</p>
+            </div>
+            <p className="text-xs text-gray-400 font-medium">ออกจากหน้านี้ได้ ระบบจะประมวลผลต่อในเบื้องหลัง ดูผลได้ที่ประวัติการตรวจสอบ</p>
+          </div>
+        )}
+
+        {mode === 'upload' && activeJob && activeJob.status === 'DONE' && (
+          <div className="border border-green-200 rounded-2xl p-6 bg-white shadow-sm text-center space-y-4">
+            <div className="mx-auto w-14 h-14 rounded-full bg-[#eefcf2] flex items-center justify-center">
+              <CheckCircle2 size={24} className="text-[#2e7d32]" />
+            </div>
+            <div>
+              <h3 className="text-base font-bold text-gray-900 truncate" title={activeJob.original_filename}>{activeJob.original_filename}</h3>
+              <p className="text-sm text-gray-600 mt-1 font-semibold">
+                พบคำผิด {activeJob.finding_count || 0} รายการ
+                {activeJob.elapsed_seconds ? ` · ใช้เวลา ${formatDuration(activeJob.elapsed_seconds)}` : ''}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <button className={actionButton} onClick={() => onFindings(activeJob)}>ดูผลการตรวจ</button>
+              <JobActionMenu job={activeJob} setError={setError} onDelete={null} />
+              <button className="focus-ring inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-[var(--border)] bg-white px-4 text-sm font-semibold text-gray-700 transition hover:bg-[var(--surface-2)] shadow-sm" onClick={resetUpload}>
+                ตรวจเอกสารใหม่
+              </button>
+            </div>
+          </div>
+        )}
+
+        {mode === 'upload' && activeJob && activeJob.status === 'FAILED' && (
+          <div className="border border-red-200 rounded-2xl p-6 bg-white shadow-sm text-center space-y-4">
+            <div className="mx-auto w-14 h-14 rounded-full bg-[var(--error-bg)] flex items-center justify-center">
+              <AlertCircle size={24} className="text-[var(--error)]" />
+            </div>
+            <div>
+              <h3 className="text-base font-bold text-gray-900 truncate" title={activeJob.original_filename}>{activeJob.original_filename}</h3>
+              <p className="text-sm text-[var(--error)] mt-1 font-semibold">{activeJob.error_text || 'เกิดข้อผิดพลาดระหว่างประมวลผล'}</p>
+            </div>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <button className={actionButton} onClick={retryUpload} disabled={!lastFile || uploading}>ลองใหม่</button>
+              <button className="focus-ring inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-[var(--border)] bg-white px-4 text-sm font-semibold text-gray-700 transition hover:bg-[var(--surface-2)] shadow-sm" onClick={resetUpload}>
+                ตรวจเอกสารใหม่
+              </button>
+            </div>
           </div>
         )}
 
@@ -875,7 +962,7 @@ function DownloadLink({ job, kind, setError, menu = false, onSelect }) {
       setOpening(false)
     }
   }
-  const label = { original: 'ไฟล์ต้นฉบับ', highlighted: 'PDF ไฮไลต์คำผิด', excel: 'รายงาน Excel' }[kind]
+  const label = { original: 'ไฟล์ต้นฉบับ', highlighted: 'ไฟล์ไฮไลต์คำผิด', excel: 'รายงาน Excel' }[kind]
   const disabled = opening || (job.status !== 'DONE' && kind !== 'original') || (kind === 'highlighted' && !job.finding_count)
   const tone = kind === 'excel'
     ? 'border-green-200 text-[#0f713b] hover:bg-[#ecfdf5]'
@@ -1206,7 +1293,7 @@ function JobTable({ jobs, compact = false, setError, onDelete, onFindings }) {
                 <td className="px-5 py-4 font-semibold text-gray-900">
                   <div className="flex items-center">
                     <div className="mr-2 flex items-center justify-center w-7 h-8 bg-red-50 border border-red-100 rounded text-red-500 font-bold text-[8px] relative pt-2 shrink-0 select-none">
-                      <span className="absolute top-0.5 text-[6px] text-red-400 font-semibold">PDF</span>
+                      <span className="absolute top-0.5 text-[6px] text-red-400 font-semibold">{fileExtLabel(job.original_filename)}</span>
                       <FileText size={12} className="mt-1" />
                     </div>
                     <span className="truncate max-w-[200px] lg:max-w-[280px]" title={job.original_filename}>
@@ -1255,7 +1342,7 @@ function JobTable({ jobs, compact = false, setError, onDelete, onFindings }) {
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-center gap-2 overflow-hidden flex-1 min-w-0">
                 <div className="mr-2 flex items-center justify-center w-7 h-8 bg-red-50 border border-red-100 rounded text-red-500 font-bold text-[8px] relative pt-2 shrink-0">
-                  <span className="absolute top-0.5 text-[6px] text-red-400 font-semibold">PDF</span>
+                  <span className="absolute top-0.5 text-[6px] text-red-400 font-semibold">{fileExtLabel(job.original_filename)}</span>
                   <FileText size={12} className="mt-1" />
                 </div>
                 <div className="font-semibold text-gray-900 truncate" title={job.original_filename}>
