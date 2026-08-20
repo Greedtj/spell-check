@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client'
 import { 
   BookOpen, Download, FileSpreadsheet, FileText, History, LibraryBig, LogOut,
   Plus, Search, Upload, Users, CheckCircle2, Info, Check, ChevronRight,
-  ChevronLeft, ChevronDown, Home, Timer, AlertCircle, Clock3, Eye, Trash2, Pencil, Menu, MoreHorizontal, Loader2
+  ChevronLeft, ChevronDown, Home, Timer, AlertCircle, Clock3, Eye, Trash2, Pencil, Menu, MoreHorizontal, Sparkles
 } from 'lucide-react'
 import './styles.css'
 
@@ -736,6 +736,30 @@ function DocumentCheck({ reload, setError, setAlert, onFindings }) {
     return () => clearInterval(id)
   }, [activeJob?.id, activeJob?.status])
 
+  // Fetch a small findings preview once a job completes (reuses the existing
+  // findings endpoint; no AI call, no new backend work).
+  const [previewFindings, setPreviewFindings] = useState([])
+  const [previewLoaded, setPreviewLoaded] = useState(false)
+
+  useEffect(() => {
+    if (!activeJob || activeJob.status !== 'DONE') {
+      setPreviewFindings([])
+      setPreviewLoaded(false)
+      return
+    }
+    if (!activeJob.finding_count) {
+      setPreviewFindings([])
+      setPreviewLoaded(true)
+      return
+    }
+    let cancelled = false
+    setPreviewLoaded(false)
+    request(`/api/jobs/${activeJob.id}/findings`)
+      .then(data => { if (!cancelled) { setPreviewFindings(data); setPreviewLoaded(true) } })
+      .catch(() => { if (!cancelled) setPreviewLoaded(true) })
+    return () => { cancelled = true }
+  }, [activeJob?.id, activeJob?.status])
+
   function resetUpload() {
     setActiveJob(null)
     setLastFile(null)
@@ -813,21 +837,23 @@ function DocumentCheck({ reload, setError, setAlert, onFindings }) {
               onDragOver={handleDrag}
               onDragLeave={handleDrag}
               onDrop={handleDrop}
-              className={`border-2 border-dashed rounded-2xl p-6 flex flex-col items-center justify-center text-center transition min-h-[290px] ${
+              className={`border-2 border-dashed rounded-2xl p-6 flex flex-col items-center justify-center text-center transition-all duration-300 min-h-[290px] ${
                 uploading ? 'cursor-not-allowed opacity-70' : 'cursor-pointer'
               } ${
                 dragActive
-                  ? 'border-[var(--primary)] bg-[var(--primary-light)]'
+                  ? 'scale-[1.02] border-[var(--primary)] bg-[var(--primary-light)]'
                   : 'border-blue-200 bg-[#f8faff] hover:bg-blue-50/50'
               }`}
             >
               <input ref={uploadRef} type="file" accept=".pdf,.docx" onChange={upload} hidden disabled={uploading} />
 
-              <div className="w-14 h-14 rounded-full bg-[#1d55b6] flex items-center justify-center mb-4 shadow-sm shadow-blue-200">
+              <div className="upload-icon-hover w-14 h-14 rounded-full bg-[#1d55b6] flex items-center justify-center mb-4 shadow-sm shadow-blue-200">
                 <Upload size={22} className="text-white" />
               </div>
 
-              <h3 className="text-base font-bold text-gray-900">{uploading ? 'กำลังอัปโหลด...' : 'อัปโหลดไฟล์เอกสาร'}</h3>
+              <h3 className="text-base font-bold text-gray-900">
+                {dragActive ? 'วางไฟล์เพื่อตรวจสอบ' : uploading ? 'กำลังอัปโหลด...' : 'อัปโหลดไฟล์เอกสาร'}
+              </h3>
               <p className="text-xs text-gray-500 mt-1 font-semibold">ลากไฟล์มาวางที่นี่ หรือคลิกเพื่อเลือกไฟล์</p>
               <p className="text-[11px] text-gray-400 mt-0.5 font-medium">ขนาดไม่เกิน 200 MB</p>
 
@@ -841,33 +867,67 @@ function DocumentCheck({ reload, setError, setAlert, onFindings }) {
         )}
 
         {mode === 'upload' && activeJob && (activeJob.status === 'PENDING' || activeJob.status === 'PROCESSING') && (
-          <div className="border border-gray-200 rounded-2xl p-6 bg-white shadow-sm text-center space-y-4">
-            <div className="mx-auto w-14 h-14 rounded-full bg-blue-50 flex items-center justify-center">
-              <Loader2 size={24} className="text-[#1d55b6] animate-spin" />
+          <div className="animate-fade-in flex flex-col items-center text-center py-8 space-y-6">
+            {/* Document illustration: larger, scanning, gently pulsing lines, AI glow badge */}
+            <div className="relative w-28 h-36 rounded-xl border border-blue-100 bg-white overflow-hidden shadow-md">
+              <div className="p-4 space-y-2.5">
+                {['w-4/5', 'w-full', 'w-3/5', 'w-full', 'w-2/3', 'w-full', 'w-1/2'].map((w, i) => (
+                  <div
+                    key={i}
+                    className={`h-2 rounded-full bg-blue-100 line-pulse ${w}`}
+                    style={{ animationDelay: `${i * 0.15}s` }}
+                  />
+                ))}
+              </div>
+              <div className="scan-line pointer-events-none absolute left-0 right-0 h-12 bg-gradient-to-b from-transparent via-[#1d55b6]/25 to-transparent" />
+              <div className="ai-glow absolute -top-2.5 -right-2.5 w-9 h-9 rounded-full bg-white border border-blue-100 shadow flex items-center justify-center">
+                <Sparkles size={16} className="text-[#1d55b6]" />
+              </div>
             </div>
+
             <div>
-              <h3 className="text-base font-bold text-gray-900 truncate" title={activeJob.original_filename}>{activeJob.original_filename}</h3>
-              <p className="text-sm text-gray-500 mt-1 font-semibold">กำลังตรวจเอกสาร...</p>
+              <h3 className="text-base font-bold text-gray-900 truncate max-w-[280px]" title={activeJob.original_filename}>{activeJob.original_filename}</h3>
+              <p className="text-sm text-gray-500 mt-1 font-semibold">กำลังตรวจสอบเอกสาร...</p>
             </div>
-            <p className="text-xs text-gray-400 font-medium">ออกจากหน้านี้ได้ ระบบจะประมวลผลต่อในเบื้องหลัง ดูผลได้ที่ประวัติการตรวจสอบ</p>
+            <p className="text-xs text-gray-400 font-medium max-w-[320px]">ออกจากหน้านี้ได้ ระบบจะประมวลผลต่อในเบื้องหลัง ดูผลได้ที่ประวัติการตรวจสอบ</p>
           </div>
         )}
 
         {mode === 'upload' && activeJob && activeJob.status === 'DONE' && (
-          <div className="border border-green-200 rounded-2xl p-6 bg-white shadow-sm text-center space-y-4">
-            <div className="mx-auto w-14 h-14 rounded-full bg-[#eefcf2] flex items-center justify-center">
-              <CheckCircle2 size={24} className="text-[#2e7d32]" />
+          <div className="animate-fade-in flex flex-col items-center text-center py-10 space-y-5">
+            <div className="animate-check-pop w-14 h-14 rounded-full bg-[#eefcf2] flex items-center justify-center">
+              <CheckCircle2 size={26} className="text-[#2e7d32]" />
             </div>
             <div>
-              <h3 className="text-base font-bold text-gray-900 truncate" title={activeJob.original_filename}>{activeJob.original_filename}</h3>
+              <h3 className="text-base font-bold text-gray-900 truncate max-w-[280px]" title={activeJob.original_filename}>{activeJob.original_filename}</h3>
               <p className="text-sm text-gray-600 mt-1 font-semibold">
                 พบคำผิด {activeJob.finding_count || 0} รายการ
                 {activeJob.elapsed_seconds ? ` · ใช้เวลา ${formatDuration(activeJob.elapsed_seconds)}` : ''}
               </p>
             </div>
+
+            {previewLoaded && (
+              previewFindings.length > 0 ? (
+                <div className="w-full max-w-[360px] space-y-1.5 text-left">
+                  {previewFindings.slice(0, 5).map(item => (
+                    <div key={item.id} className="flex items-center gap-2 text-sm">
+                      <span className="font-semibold text-red-500 line-through truncate max-w-[140px]" title={item.found}>{item.found}</span>
+                      <span className="text-gray-300 shrink-0">→</span>
+                      <span className="font-semibold text-green-600 truncate max-w-[140px]" title={item.suggestion}>{item.suggestion}</span>
+                    </div>
+                  ))}
+                  {previewFindings.length > 5 && (
+                    <p className="text-xs text-gray-400 font-medium pt-1">และอีก {previewFindings.length - 5} จุด</p>
+                  )}
+                </div>
+              ) : (
+                <p className="text-sm text-gray-400 font-medium">ไม่พบคำที่ควรแก้ไข</p>
+              )
+            )}
+
             <div className="flex flex-wrap items-center justify-center gap-2">
               <button className={actionButton} onClick={() => onFindings(activeJob)}>ดูผลการตรวจ</button>
-              <JobActionMenu job={activeJob} setError={setError} onDelete={null} />
+              <DownloadResultMenu job={activeJob} setError={setError} />
               <button className="focus-ring inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-[var(--border)] bg-white px-4 text-sm font-semibold text-gray-700 transition hover:bg-[var(--surface-2)] shadow-sm" onClick={resetUpload}>
                 ตรวจเอกสารใหม่
               </button>
@@ -876,16 +936,16 @@ function DocumentCheck({ reload, setError, setAlert, onFindings }) {
         )}
 
         {mode === 'upload' && activeJob && activeJob.status === 'FAILED' && (
-          <div className="border border-red-200 rounded-2xl p-6 bg-white shadow-sm text-center space-y-4">
-            <div className="mx-auto w-14 h-14 rounded-full bg-[var(--error-bg)] flex items-center justify-center">
-              <AlertCircle size={24} className="text-[var(--error)]" />
+          <div className="animate-fade-in flex flex-col items-center text-center py-10 space-y-5">
+            <div className="w-14 h-14 rounded-full bg-[var(--error-bg)] flex items-center justify-center">
+              <AlertCircle size={26} className="text-[var(--error)]" />
             </div>
             <div>
-              <h3 className="text-base font-bold text-gray-900 truncate" title={activeJob.original_filename}>{activeJob.original_filename}</h3>
-              <p className="text-sm text-[var(--error)] mt-1 font-semibold">{activeJob.error_text || 'เกิดข้อผิดพลาดระหว่างประมวลผล'}</p>
+              <h3 className="text-base font-bold text-gray-900 truncate max-w-[280px]" title={activeJob.original_filename}>{activeJob.original_filename}</h3>
+              <p className="text-sm text-[var(--error)] mt-1 font-semibold max-w-[320px]">{activeJob.error_text || 'เกิดข้อผิดพลาดระหว่างประมวลผล'}</p>
             </div>
             <div className="flex flex-wrap items-center justify-center gap-2">
-              <button className={actionButton} onClick={retryUpload} disabled={!lastFile || uploading}>ลองใหม่</button>
+              <button className={actionButton} onClick={retryUpload} disabled={!lastFile || uploading}>ลองอีกครั้ง</button>
               <button className="focus-ring inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-[var(--border)] bg-white px-4 text-sm font-semibold text-gray-700 transition hover:bg-[var(--surface-2)] shadow-sm" onClick={resetUpload}>
                 ตรวจเอกสารใหม่
               </button>
@@ -1173,6 +1233,83 @@ function Pagination({ page, setPage, total, pageSize = 5, setPageSize }) {
         <span className="text-xs font-semibold text-gray-400">{pageSize} รายการต่อหน้า</span>
       )}
     </div>
+  )
+}
+
+function DownloadResultMenu({ job, setError }) {
+  const buttonRef = useRef(null)
+  const menuRef = useRef(null)
+  const [position, setPosition] = useState(null)
+
+  function close() {
+    setPosition(null)
+  }
+
+  function toggle() {
+    if (position) return close()
+    const rect = buttonRef.current.getBoundingClientRect()
+    const above = window.innerHeight - rect.bottom < 220
+    setPosition({
+      right: Math.max(12, window.innerWidth - rect.right),
+      ...(above ? { bottom: window.innerHeight - rect.top + 8 } : { top: rect.bottom + 8 }),
+    })
+  }
+
+  useEffect(() => {
+    if (!position) return
+    menuRef.current?.querySelector('button:not(:disabled)')?.focus()
+    const outside = (event) => {
+      if (!menuRef.current?.contains(event.target) && !buttonRef.current?.contains(event.target)) close()
+    }
+    const escape = (event) => {
+      if (event.key === 'Escape') {
+        close()
+        buttonRef.current?.focus()
+      }
+    }
+    window.addEventListener('pointerdown', outside)
+    window.addEventListener('keydown', escape)
+    window.addEventListener('resize', close)
+    window.addEventListener('scroll', close, true)
+    return () => {
+      window.removeEventListener('pointerdown', outside)
+      window.removeEventListener('keydown', escape)
+      window.removeEventListener('resize', close)
+      window.removeEventListener('scroll', close, true)
+    }
+  }, [position])
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        className={actionButton}
+        aria-haspopup="menu"
+        aria-expanded={Boolean(position)}
+        onClick={toggle}
+      >
+        <Download size={16} />
+        <span>ดาวน์โหลดผลลัพธ์</span>
+      </button>
+      {position && createPortal(
+        <div
+          ref={menuRef}
+          className="fixed z-[80] w-56 rounded-xl border border-gray-200 bg-white p-1.5 shadow-lg"
+          style={position}
+          role="menu"
+          aria-label={`ดาวน์โหลดผลลัพธ์ ${job.original_filename}`}
+        >
+          <DownloadLink job={job} kind="original" setError={setError} menu onSelect={close} />
+          {job.status === 'DONE' && (
+            <>
+              <DownloadLink job={job} kind="highlighted" setError={setError} menu onSelect={close} />
+              <DownloadLink job={job} kind="excel" setError={setError} menu onSelect={close} />
+            </>
+          )}
+        </div>,
+        document.body,
+      )}
+    </>
   )
 }
 
