@@ -122,6 +122,28 @@ BEGIN
 END
 GO
 
+IF OBJECT_ID(N'dbo.auditLogs', N'U') IS NULL
+BEGIN
+    -- Append-only audit trail: no isActive/updatedBy/updateAt columns by design.
+    CREATE TABLE dbo.auditLogs (
+        id INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_auditLogs PRIMARY KEY,
+        event NVARCHAR(50) NOT NULL,
+        actorUserId INT NULL,
+        targetUserId INT NULL,
+        jobId NVARCHAR(36) NULL,
+        detail NVARCHAR(500) NULL,
+        createdAt DATETIME2(0) NOT NULL CONSTRAINT DF_auditLogs_createdAt DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT CK_auditLogs_event CHECK (event IN (
+            N'LOGIN_SUCCESS', N'LOGIN_FAILED', N'JOB_SUBMITTED', N'JOB_DONE', N'JOB_FAILED',
+            N'RESULT_DOWNLOADED', N'DOCUMENT_DELETED', N'ADMIN_ROLE_CHANGED', N'USER_STATUS_CHANGED'
+        )),
+        CONSTRAINT FK_auditLogs_actorUserId FOREIGN KEY (actorUserId) REFERENCES dbo.users(id),
+        CONSTRAINT FK_auditLogs_targetUserId FOREIGN KEY (targetUserId) REFERENCES dbo.users(id),
+        CONSTRAINT FK_auditLogs_jobId FOREIGN KEY (jobId) REFERENCES dbo.jobs(id)
+    );
+END
+GO
+
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_jobs_userId' AND object_id = OBJECT_ID(N'dbo.jobs'))
     CREATE INDEX IX_jobs_userId ON dbo.jobs(userId);
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_jobs_status' AND object_id = OBJECT_ID(N'dbo.jobs'))
@@ -138,4 +160,10 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_spellcheckFindings_fo
     CREATE INDEX IX_spellcheckFindings_found ON dbo.spellcheckFindings(found);
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_spellcheckFindings_suggestion' AND object_id = OBJECT_ID(N'dbo.spellcheckFindings'))
     CREATE INDEX IX_spellcheckFindings_suggestion ON dbo.spellcheckFindings(suggestion);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_auditLogs_actorUserId' AND object_id = OBJECT_ID(N'dbo.auditLogs'))
+    CREATE INDEX IX_auditLogs_actorUserId ON dbo.auditLogs(actorUserId);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_auditLogs_jobId' AND object_id = OBJECT_ID(N'dbo.auditLogs'))
+    CREATE INDEX IX_auditLogs_jobId ON dbo.auditLogs(jobId);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_auditLogs_event_createdAt' AND object_id = OBJECT_ID(N'dbo.auditLogs'))
+    CREATE INDEX IX_auditLogs_event_createdAt ON dbo.auditLogs(event, createdAt);
 GO

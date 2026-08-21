@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client'
 import { 
   BookOpen, Download, FileSpreadsheet, FileText, History, LibraryBig, LogOut,
   Plus, Search, Upload, Users, CheckCircle2, Info, Check, ChevronRight,
-  ChevronLeft, ChevronDown, Home, Timer, AlertCircle, Clock3, Eye, Trash2, Pencil, Menu, MoreHorizontal
+  ChevronLeft, ChevronDown, Home, Timer, AlertCircle, Clock3, Eye, Trash2, Pencil, Menu, MoreHorizontal, Sparkles
 } from 'lucide-react'
 import './styles.css'
 
@@ -122,6 +122,10 @@ async function mockRequest(path, options = {}) {
   ]
   if (path.includes('/download/')) return { url: '#' }
   return {}
+}
+
+function fileExtLabel(filename) {
+  return filename?.toLowerCase().endsWith('.docx') ? 'DOCX' : 'PDF'
 }
 
 function formatDuration(seconds) {
@@ -286,10 +290,10 @@ function App() {
         <Topbar view={view} me={me} setSidebarOpen={setSidebarOpen} />
         {error && <p className="mx-6 mt-4 rounded-xl border border-[var(--error)] bg-[var(--error-bg)] px-4 py-3 text-sm text-[var(--error)] font-semibold">{error}</p>}
         <div className="flex-1 overflow-y-auto no-scrollbar">
-          {view === 'dashboard' && <Dashboard jobs={jobs} reload={load} setError={setError} setView={setView} me={me} setAlert={setAlert} onFindings={showFindings} />}
+          {view === 'dashboard' && <Dashboard jobs={jobs} setView={setView} me={me} setError={setError} onFindings={showFindings} />}
+          {view === 'document-check' && <DocumentCheck reload={load} setError={setError} setAlert={setAlert} onFindings={showFindings} />}
           {view === 'history' && <HistoryView jobs={filtered} query={query} setQuery={setQuery} setError={setError} onDelete={deleteJob} onFindings={showFindings} />}
           {view === 'findings' && <FindingsView job={selectedJob} setView={setView} setError={setError} />}
-          {view === 'text-check' && <TextCheckView setError={setError} />}
           {me.is_admin && view === 'admin' && <Admin setAlert={setAlert} setConfirm={setConfirm} />}
         </div>
       </section>
@@ -375,8 +379,8 @@ function Sidebar({ view, setView, me, sidebarOpen, setSidebarOpen }) {
 function SidebarContent({ view, setView, me, onClose }) {
   const mainMenuItems = [
     { id: 'dashboard', icon: Home, label: 'แดชบอร์ด' },
-    { id: 'history', icon: History, label: 'ประวัติการตรวจสอบ' },
-    { id: 'text-check', icon: FileText, label: 'ตรวจข้อความ' }
+    { id: 'document-check', icon: Upload, label: 'ตรวจเอกสาร' },
+    { id: 'history', icon: History, label: 'ประวัติการตรวจสอบ' }
   ]
 
   const adminMenuItems = [
@@ -465,9 +469,9 @@ function SidebarContent({ view, setView, me, onClose }) {
 function Topbar({ view, me, setSidebarOpen }) {
   const titleMap = {
     dashboard: 'แดชบอร์ด',
+    'document-check': 'ตรวจเอกสาร',
     history: 'ประวัติการตรวจสอบ',
     findings: 'รายการคำผิด',
-    'text-check': 'ตรวจข้อความ',
     dictionary: 'คลังคำศัพท์ (Dictionary)',
     logs: 'บันทึกการทำงาน (Logs)',
     admin: 'จัดการผู้ใช้งาน',
@@ -531,61 +535,8 @@ function KpiCard({ label, value, subtext, icon: Icon, iconBg, iconColor }) {
   )
 }
 
-function Dashboard({ jobs, reload, setError, setView, me, setAlert, onFindings }) {
-  const uploadRef = useRef(null)
+function Dashboard({ jobs, setView, me, setError, onFindings }) {
   const [page, setPage] = useState(1)
-  const [dragActive, setDragActive] = useState(false)
-
-  async function upload(e) {
-    const file = e.target.files?.[0]
-    if (!file) return
-    if (file.type !== "application/pdf") {
-      setAlert({ type: 'error', message: 'กรุณาอัปโหลดไฟล์ PDF เท่านั้น' })
-      return
-    }
-    const form = new FormData()
-    form.append('file', file)
-    try {
-      await request('/api/jobs', { method: 'POST', body: form })
-      setAlert({ type: 'success', message: 'อัปโหลดเอกสารสำเร็จ กำลังประมวลผล...' })
-      await reload()
-    } catch (err) {
-      setError(err.message)
-      setAlert({ type: 'error', message: err.message })
-    } finally {
-      e.target.value = ''
-    }
-  }
-
-  const handleDrag = (e) => {
-    e.preventDefault()
-    e.stopPropagation()
-    if (e.type === "dragenter" || e.type === "dragover") {
-      setDragActive(true)
-    } else if (e.type === "dragleave") {
-      setDragActive(false)
-    }
-  }
-
-  const handleDrop = async (e) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setDragActive(false)
-    const file = e.dataTransfer?.files?.[0]
-    if (file && file.type === "application/pdf") {
-      const form = new FormData()
-      form.append('file', file)
-      try {
-        await request('/api/jobs', { method: 'POST', body: form })
-        setAlert({ type: 'success', message: 'อัปโหลดเอกสารสำเร็จ กำลังประมวลผล...' })
-        await reload()
-      } catch (err) {
-        setAlert({ type: 'error', message: err.message })
-      }
-    } else if (file) {
-      setAlert({ type: 'error', message: 'กรุณาอัปโหลดไฟล์ PDF เท่านั้น' })
-    }
-  }
 
   const totalJobsCount = MOCK ? 128 : jobs.length
   const processingCount = MOCK ? 3 : jobs.filter(j => j.status === 'PROCESSING').length
@@ -613,9 +564,9 @@ function Dashboard({ jobs, reload, setError, setView, me, setAlert, onFindings }
         </div>
         
         <div className="flex flex-wrap items-center gap-3">
-          <button className={actionButton} onClick={() => setView('text-check')}>
-            <FileText size={16} />
-            <span>ตรวจข้อความ</span>
+          <button className="focus-ring inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-[#1d55b6] px-4 text-sm font-semibold text-white transition hover:bg-[#174496] shadow-sm" onClick={() => setView('document-check')}>
+            <Upload size={16} />
+            <span>ตรวจเอกสาร</span>
           </button>
           {/* Connection status badge */}
           <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-green-200 bg-[#eefcf2] text-xs font-semibold text-[#2e7d32] select-none">
@@ -625,88 +576,57 @@ function Dashboard({ jobs, reload, setError, setView, me, setAlert, onFindings }
         </div>
       </div>
 
-      {/* Upload and Metrics Row */}
-      <div className="grid grid-cols-12 gap-6">
-        {/* Upload File Card (col-span-4) */}
-        <div 
-          onClick={() => uploadRef.current?.click()}
-          onDragEnter={handleDrag}
-          onDragOver={handleDrag}
-          onDragLeave={handleDrag}
-          onDrop={handleDrop}
-          className={`col-span-12 lg:col-span-4 border-2 border-dashed rounded-2xl p-6 flex flex-col items-center justify-center text-center cursor-pointer transition min-h-[290px] ${
-            dragActive 
-              ? 'border-[var(--primary)] bg-[var(--primary-light)]' 
-              : 'border-blue-200 bg-[#f8faff] hover:bg-blue-50/50'
-          }`}
-        >
-          <input ref={uploadRef} type="file" accept="application/pdf" onChange={upload} hidden />
-          
-          <div className="w-14 h-14 rounded-full bg-[#1d55b6] flex items-center justify-center mb-4 shadow-sm shadow-blue-200">
-            <Upload size={22} className="text-white" />
-          </div>
-
-          <h3 className="text-base font-bold text-gray-900">อัปโหลดไฟล์ PDF</h3>
-          <p className="text-xs text-gray-500 mt-1 font-semibold">ลากไฟล์มาวางที่นี่ หรือคลิกเพื่อเลือกไฟล์</p>
-          <p className="text-[11px] text-gray-400 mt-0.5 font-medium">รองรับไฟล์ PDF ขนาดไม่เกิน 200 MB</p>
-
-          <button className="mt-5 px-6 py-2.5 bg-[#1d55b6] hover:bg-[#174496] text-white rounded-xl text-xs font-bold transition shadow-sm">
-            เลือกไฟล์ PDF
-          </button>
+      {/* Metrics Row */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-5">
+        <div className="col-span-1 xl:col-span-2">
+          <KpiCard
+            label="งานทั้งหมด"
+            value={totalJobsCount}
+            subtext="ไฟล์ที่อัปโหลดทั้งหมด"
+            icon={FileText}
+            iconBg="bg-blue-50"
+            iconColor="text-[#1d55b6]"
+          />
         </div>
-
-        {/* KPI Cards Grid (col-span-8) */}
-        <div className="col-span-12 lg:col-span-8 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-5">
-          <div className="col-span-1 xl:col-span-2">
-            <KpiCard 
-              label="งานทั้งหมด" 
-              value={totalJobsCount} 
-              subtext="ไฟล์ที่อัปโหลดทั้งหมด" 
-              icon={FileText} 
-              iconBg="bg-blue-50" 
-              iconColor="text-[#1d55b6]" 
-            />
-          </div>
-          <div className="col-span-1 xl:col-span-2">
-            <KpiCard 
-              label="กำลังดำเนินการ" 
-              value={processingCount} 
-              subtext="กำลังตรวจสอบ" 
-              icon={Clock3} 
-              iconBg="bg-[#fff3e6]" 
-              iconColor="text-[#f58220]" 
-            />
-          </div>
-          <div className="col-span-1 xl:col-span-2">
-            <KpiCard 
-              label="ตรวจสอบเสร็จสิ้น" 
-              value={doneCount} 
-              subtext="เสร็จสมบูรณ์" 
-              icon={CheckCircle2} 
-              iconBg="bg-[#eefcf2]" 
-              iconColor="text-[#48a83c]" 
-            />
-          </div>
-          <div className="col-span-1 xl:col-span-3">
-            <KpiCard 
-              label="พบคำผิดทั้งหมด" 
-              value={findingsCount.toLocaleString()} 
-              subtext="รายการ" 
-              icon={AlertCircle} 
-              iconBg="bg-[#ffe9e7]" 
-              iconColor="text-[#ff6b62]" 
-            />
-          </div>
-          <div className="col-span-1 sm:col-span-2 xl:col-span-3">
-            <KpiCard 
-              label="เวลาเฉลี่ยต่อไฟล์" 
-              value={averageTime} 
-              subtext="(เฉลี่ย)" 
-              icon={Timer} 
-              iconBg="bg-[#f3ebff]" 
-              iconColor="text-[#a855f7]" 
-            />
-          </div>
+        <div className="col-span-1 xl:col-span-2">
+          <KpiCard
+            label="กำลังดำเนินการ"
+            value={processingCount}
+            subtext="กำลังตรวจสอบ"
+            icon={Clock3}
+            iconBg="bg-[#fff3e6]"
+            iconColor="text-[#f58220]"
+          />
+        </div>
+        <div className="col-span-1 xl:col-span-2">
+          <KpiCard
+            label="ตรวจสอบเสร็จสิ้น"
+            value={doneCount}
+            subtext="เสร็จสมบูรณ์"
+            icon={CheckCircle2}
+            iconBg="bg-[#eefcf2]"
+            iconColor="text-[#48a83c]"
+          />
+        </div>
+        <div className="col-span-1 xl:col-span-3">
+          <KpiCard
+            label="พบคำผิดทั้งหมด"
+            value={findingsCount.toLocaleString()}
+            subtext="รายการ"
+            icon={AlertCircle}
+            iconBg="bg-[#ffe9e7]"
+            iconColor="text-[#ff6b62]"
+          />
+        </div>
+        <div className="col-span-1 sm:col-span-2 xl:col-span-3">
+          <KpiCard
+            label="เวลาเฉลี่ยต่อไฟล์"
+            value={averageTime}
+            subtext="(เฉลี่ย)"
+            icon={Timer}
+            iconBg="bg-[#f3ebff]"
+            iconColor="text-[#a855f7]"
+          />
         </div>
       </div>
 
@@ -735,9 +655,350 @@ function Dashboard({ jobs, reload, setError, setView, me, setAlert, onFindings }
         <div>
           <strong className="block font-bold">เคล็ดลับการใช้งาน</strong>
           <span className="block mt-0.5 text-xs text-blue-700 font-semibold leading-relaxed">
-            ระบบจะตรวจสอบคำผิดอัตโนมัติหลังจากอัปโหลดไฟล์ PDF เจ้าหน้าที่และอาจารย์สามารถดูรายการคำผิดและดาวน์โหลดรายงานฉบับสมบูรณ์ (Original/Excel) เมื่อประมวลผลเสร็จสิ้น
+            ระบบจะตรวจสอบคำผิดอัตโนมัติหลังจากอัปโหลดไฟล์ PDF หรือ DOCX เจ้าหน้าที่และอาจารย์สามารถดูรายการคำผิดและดาวน์โหลดรายงานฉบับสมบูรณ์ (Original/Excel) เมื่อประมวลผลเสร็จสิ้น
           </span>
         </div>
+      </div>
+    </main>
+  )
+}
+
+function DocumentCheck({ reload, setError, setAlert, onFindings }) {
+  const [mode, setMode] = useState('upload') // 'upload' | 'text'
+
+  // --- Upload mode state/logic ---
+  const uploadRef = useRef(null)
+  const [dragActive, setDragActive] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [activeJob, setActiveJob] = useState(null)
+  const [lastFile, setLastFile] = useState(null)
+
+  async function submitFile(file) {
+    if (!file) return
+    const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase()
+    if (ext !== '.pdf' && ext !== '.docx') {
+      setAlert({ type: 'error', message: 'กรุณาอัปโหลดไฟล์ PDF หรือ DOCX เท่านั้น' })
+      return
+    }
+    const form = new FormData()
+    form.append('file', file)
+    setUploading(true)
+    try {
+      const job = await request('/api/jobs', { method: 'POST', body: form })
+      setLastFile(file)
+      setActiveJob(job)
+      await reload()
+    } catch (err) {
+      setError(err.message)
+      setAlert({ type: 'error', message: err.message })
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  async function upload(e) {
+    const file = e.target.files?.[0]
+    await submitFile(file)
+    e.target.value = ''
+  }
+
+  const handleDrag = (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (e.type === 'dragenter' || e.type === 'dragover') {
+      setDragActive(true)
+    } else if (e.type === 'dragleave') {
+      setDragActive(false)
+    }
+  }
+
+  const handleDrop = async (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragActive(false)
+    await submitFile(e.dataTransfer?.files?.[0])
+  }
+
+  // Poll the job's own status endpoint while it's still queued/running.
+  useEffect(() => {
+    if (!activeJob || (activeJob.status !== 'PENDING' && activeJob.status !== 'PROCESSING')) return
+    const id = setInterval(async () => {
+      try {
+        const job = await request(`/api/jobs/${activeJob.id}`)
+        setActiveJob(job)
+        if (job.status === 'DONE' || job.status === 'FAILED') {
+          reload()
+        }
+      } catch {
+        // job may have been removed elsewhere; stop polling silently
+      }
+    }, 3000)
+    return () => clearInterval(id)
+  }, [activeJob?.id, activeJob?.status])
+
+  // Fetch a small findings preview once a job completes (reuses the existing
+  // findings endpoint; no AI call, no new backend work).
+  const [previewFindings, setPreviewFindings] = useState([])
+  const [previewLoaded, setPreviewLoaded] = useState(false)
+
+  useEffect(() => {
+    if (!activeJob || activeJob.status !== 'DONE') {
+      setPreviewFindings([])
+      setPreviewLoaded(false)
+      return
+    }
+    if (!activeJob.finding_count) {
+      setPreviewFindings([])
+      setPreviewLoaded(true)
+      return
+    }
+    let cancelled = false
+    setPreviewLoaded(false)
+    request(`/api/jobs/${activeJob.id}/findings`)
+      .then(data => { if (!cancelled) { setPreviewFindings(data); setPreviewLoaded(true) } })
+      .catch(() => { if (!cancelled) setPreviewLoaded(true) })
+    return () => { cancelled = true }
+  }, [activeJob?.id, activeJob?.status])
+
+  function resetUpload() {
+    setActiveJob(null)
+    setLastFile(null)
+  }
+
+  function retryUpload() {
+    if (lastFile) submitFile(lastFile)
+  }
+
+  // --- Text mode state/logic (unchanged behavior, merged from ตรวจข้อความ) ---
+  const [text, setText] = useState('')
+  const [findings, setFindings] = useState([])
+  const [history, setHistory] = useState(textCheckHistory)
+  const [checking, setChecking] = useState(false)
+  const [hasChecked, setHasChecked] = useState(false)
+  const overLimit = text.length > 500
+
+  async function checkText() {
+    const value = text.trim()
+    if (!value) return setError('กรุณาใส่ข้อความที่ต้องการตรวจ')
+    if (overLimit) return setError('ข้อความยาวเกิน 500 ตัวอักษร')
+    setChecking(true)
+    setError('')
+    try {
+      const nextFindings = await request('/api/text-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: value }),
+      })
+      setFindings(nextFindings)
+      const nextHistory = [{ text: value, findings: nextFindings, checkedAt: Date.now() }, ...history.filter(item => item.text !== value)].slice(0, 3)
+      setHistory(nextHistory)
+      saveTextCheckHistory(nextHistory)
+      setHasChecked(true)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  const tabButton = (id, label) => (
+    <button
+      onClick={() => setMode(id)}
+      className={`flex-1 rounded-lg px-4 py-2 text-sm font-bold transition ${
+        mode === id ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+      }`}
+    >
+      {label}
+    </button>
+  )
+
+  return (
+    <main className="min-h-[calc(100vh-80px)] overflow-auto p-6 font-app">
+      <div className="mx-auto w-full max-w-[600px] pt-8 sm:pt-14 space-y-6">
+        <div className="space-y-1 text-center">
+          <h2 className="text-2xl font-extrabold tracking-tight text-gray-900">ตรวจเอกสาร</h2>
+          <p className="text-sm text-gray-500 font-medium">
+            {mode === 'upload' ? 'อัปโหลดไฟล์เพื่อตรวจคำผิดอัตโนมัติ' : 'วางข้อความเพื่อตรวจคำผิดทันที'}
+          </p>
+        </div>
+
+        {/* Mode tabs */}
+        <div className="flex items-center gap-1 rounded-xl border border-gray-200 bg-gray-50 p-1">
+          {tabButton('upload', 'อัปโหลดเอกสาร')}
+          {tabButton('text', 'วางข้อความ')}
+        </div>
+
+        {mode === 'upload' && !activeJob && (
+          <div className="space-y-3">
+            {/* Upload dropzone: file type is detected automatically */}
+            <div
+              onClick={() => !uploading && uploadRef.current?.click()}
+              onDragEnter={handleDrag}
+              onDragOver={handleDrag}
+              onDragLeave={handleDrag}
+              onDrop={handleDrop}
+              className={`border-2 border-dashed rounded-2xl p-6 flex flex-col items-center justify-center text-center transition-all duration-300 min-h-[290px] ${
+                uploading ? 'cursor-not-allowed opacity-70' : 'cursor-pointer'
+              } ${
+                dragActive
+                  ? 'scale-[1.02] border-[var(--primary)] bg-[var(--primary-light)]'
+                  : 'border-blue-200 bg-[#f8faff] hover:bg-blue-50/50'
+              }`}
+            >
+              <input ref={uploadRef} type="file" accept=".pdf,.docx" onChange={upload} hidden disabled={uploading} />
+
+              <div className="upload-icon-hover w-14 h-14 rounded-full bg-[#1d55b6] flex items-center justify-center mb-4 shadow-sm shadow-blue-200">
+                <Upload size={22} className="text-white" />
+              </div>
+
+              <h3 className="text-base font-bold text-gray-900">
+                {dragActive ? 'วางไฟล์เพื่อตรวจสอบ' : uploading ? 'กำลังอัปโหลด...' : 'อัปโหลดไฟล์เอกสาร'}
+              </h3>
+              <p className="text-xs text-gray-500 mt-1 font-semibold">ลากไฟล์มาวางที่นี่ หรือคลิกเพื่อเลือกไฟล์</p>
+              <p className="text-[11px] text-gray-400 mt-0.5 font-medium">ขนาดไม่เกิน 200 MB</p>
+
+              <button className="mt-5 px-6 py-2.5 bg-[#1d55b6] hover:bg-[#174496] text-white rounded-xl text-xs font-bold transition shadow-sm disabled:opacity-60" disabled={uploading}>
+                เลือกไฟล์
+              </button>
+            </div>
+
+            <p className="text-xs text-gray-400 font-medium text-center">ดูผลลัพธ์ได้ที่ประวัติการตรวจสอบ</p>
+          </div>
+        )}
+
+        {mode === 'upload' && activeJob && (activeJob.status === 'PENDING' || activeJob.status === 'PROCESSING') && (
+          <div className="animate-fade-in flex flex-col items-center text-center py-8 space-y-6">
+            {/* Document illustration: larger, scanning, gently pulsing lines, AI glow badge */}
+            <div className="relative w-28 h-36 rounded-xl border border-blue-100 bg-white overflow-hidden shadow-md">
+              <div className="p-4 space-y-2.5">
+                {['w-4/5', 'w-full', 'w-3/5', 'w-full', 'w-2/3', 'w-full', 'w-1/2'].map((w, i) => (
+                  <div
+                    key={i}
+                    className={`h-2 rounded-full bg-blue-100 line-pulse ${w}`}
+                    style={{ animationDelay: `${i * 0.15}s` }}
+                  />
+                ))}
+              </div>
+              <div className="scan-line pointer-events-none absolute left-0 right-0 h-12 bg-gradient-to-b from-transparent via-[#1d55b6]/25 to-transparent" />
+              <div className="ai-glow absolute -top-2.5 -right-2.5 w-9 h-9 rounded-full bg-white border border-blue-100 shadow flex items-center justify-center">
+                <Sparkles size={16} className="text-[#1d55b6]" />
+              </div>
+            </div>
+
+            <div>
+              <h3 className="text-base font-bold text-gray-900 truncate max-w-[280px]" title={activeJob.original_filename}>{activeJob.original_filename}</h3>
+              <p className="text-sm text-gray-500 mt-1 font-semibold">กำลังตรวจสอบเอกสาร...</p>
+            </div>
+            <p className="text-xs text-gray-400 font-medium max-w-[320px]">ออกจากหน้านี้ได้ ระบบจะประมวลผลต่อในเบื้องหลัง ดูผลได้ที่ประวัติการตรวจสอบ</p>
+          </div>
+        )}
+
+        {mode === 'upload' && activeJob && activeJob.status === 'DONE' && (
+          <div className="animate-fade-in flex flex-col items-center text-center py-10 space-y-5">
+            <div className="animate-check-pop w-14 h-14 rounded-full bg-[#eefcf2] flex items-center justify-center">
+              <CheckCircle2 size={26} className="text-[#2e7d32]" />
+            </div>
+            <div>
+              <h3 className="text-base font-bold text-gray-900 truncate max-w-[280px]" title={activeJob.original_filename}>{activeJob.original_filename}</h3>
+              <p className="text-sm text-gray-600 mt-1 font-semibold">
+                พบคำผิด {activeJob.finding_count || 0} รายการ
+                {activeJob.elapsed_seconds ? ` · ใช้เวลา ${formatDuration(activeJob.elapsed_seconds)}` : ''}
+              </p>
+            </div>
+
+            {previewLoaded && (
+              previewFindings.length > 0 ? (
+                <div className="w-full max-w-[360px] space-y-1.5 text-left">
+                  {previewFindings.slice(0, 5).map(item => (
+                    <div key={item.id} className="flex items-center gap-2 text-sm">
+                      <span className="font-semibold text-red-500 line-through truncate max-w-[140px]" title={item.found}>{item.found}</span>
+                      <span className="text-gray-300 shrink-0">→</span>
+                      <span className="font-semibold text-green-600 truncate max-w-[140px]" title={item.suggestion}>{item.suggestion}</span>
+                    </div>
+                  ))}
+                  {previewFindings.length > 5 && (
+                    <p className="text-xs text-gray-400 font-medium pt-1">และอีก {previewFindings.length - 5} จุด</p>
+                  )}
+                </div>
+              ) : (
+                <p className="text-sm text-gray-400 font-medium">ไม่พบคำที่ควรแก้ไข</p>
+              )
+            )}
+
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <button className={actionButton} onClick={() => onFindings(activeJob)}>ดูผลการตรวจ</button>
+              <DownloadResultMenu job={activeJob} setError={setError} />
+              <button className="focus-ring inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-[var(--border)] bg-white px-4 text-sm font-semibold text-gray-700 transition hover:bg-[var(--surface-2)] shadow-sm" onClick={resetUpload}>
+                ตรวจเอกสารใหม่
+              </button>
+            </div>
+          </div>
+        )}
+
+        {mode === 'upload' && activeJob && activeJob.status === 'FAILED' && (
+          <div className="animate-fade-in flex flex-col items-center text-center py-10 space-y-5">
+            <div className="w-14 h-14 rounded-full bg-[var(--error-bg)] flex items-center justify-center">
+              <AlertCircle size={26} className="text-[var(--error)]" />
+            </div>
+            <div>
+              <h3 className="text-base font-bold text-gray-900 truncate max-w-[280px]" title={activeJob.original_filename}>{activeJob.original_filename}</h3>
+              <p className="text-sm text-[var(--error)] mt-1 font-semibold max-w-[320px]">{activeJob.error_text || 'เกิดข้อผิดพลาดระหว่างประมวลผล'}</p>
+            </div>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <button className={actionButton} onClick={retryUpload} disabled={!lastFile || uploading}>ลองอีกครั้ง</button>
+              <button className="focus-ring inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-[var(--border)] bg-white px-4 text-sm font-semibold text-gray-700 transition hover:bg-[var(--surface-2)] shadow-sm" onClick={resetUpload}>
+                ตรวจเอกสารใหม่
+              </button>
+            </div>
+          </div>
+        )}
+
+        {mode === 'text' && (
+          <div className="space-y-5">
+            <div className="card bg-white p-5 shadow-sm">
+              <label htmlFor="text-check" className="mb-2 block text-sm font-bold text-gray-700">วางหรือพิมพ์ข้อความที่ต้องการตรวจ</label>
+              <textarea
+                id="text-check"
+                value={text}
+                onChange={event => { setText(event.target.value); setHasChecked(false) }}
+                maxLength={501}
+                rows={7}
+                placeholder="เช่น ข้อความอีเมลที่ต้องการตรวจคำผิด..."
+                className="w-full resize-y rounded-xl border border-[var(--border)] bg-white p-3 text-sm font-medium leading-relaxed outline-none transition focus:border-[var(--accent)]"
+                aria-describedby="text-check-count"
+              />
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                <span id="text-check-count" className={`text-xs font-semibold ${overLimit ? 'text-[var(--error)]' : 'text-gray-400'}`}>{text.length}/500 ตัวอักษร</span>
+                <button className={actionButton} onClick={checkText} disabled={checking || !text.trim() || overLimit}>
+                  {checking ? 'กำลังตรวจ...' : 'ตรวจข้อความ'}
+                </button>
+              </div>
+            </div>
+
+            {hasChecked && (
+              <div className="card overflow-hidden bg-white shadow-sm">
+                <div className="divide-y divide-gray-100">
+                  {findings.map(item => <div key={item.id} className="p-4 space-y-2"><div className="flex items-center gap-2 text-sm"><span className="font-bold text-red-500 line-through">{item.found}</span><span className="text-xs text-gray-400">→</span><span className="font-extrabold text-green-600">{item.suggestion}</span></div><div className="text-xs text-gray-500 font-semibold">เหตุผล: {item.reason}</div></div>)}
+                  {!findings.length && <div className="p-8 text-center text-sm font-semibold text-gray-400">ไม่พบรายการคำผิด</div>}
+                </div>
+              </div>
+            )}
+
+            {history.length > 0 && (
+              <div className="card overflow-hidden bg-white shadow-sm">
+                <div className="border-b border-gray-100 px-5 py-3 text-sm font-bold text-gray-700">ประวัติล่าสุด <span className="text-xs font-semibold text-gray-400">(เก็บ 24 ชั่วโมง)</span></div>
+                <div className="divide-y divide-gray-100">
+                  {history.map(item => (
+                    <button key={item.checkedAt} className="w-full px-5 py-3 text-left transition hover:bg-gray-50" onClick={() => { setText(item.text); setFindings(item.findings); setHasChecked(true); setError('') }}>
+                      <span className="block truncate text-sm font-semibold text-gray-700">{item.text}</span>
+                      <span className="mt-1 block text-xs font-semibold text-gray-400">พบ {item.findings.length} รายการ · {new Date(item.checkedAt).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </main>
   )
@@ -761,7 +1022,7 @@ function DownloadLink({ job, kind, setError, menu = false, onSelect }) {
       setOpening(false)
     }
   }
-  const label = { original: 'ไฟล์ต้นฉบับ', highlighted: 'PDF ไฮไลต์คำผิด', excel: 'รายงาน Excel' }[kind]
+  const label = { original: 'ไฟล์ต้นฉบับ', highlighted: 'ไฟล์ไฮไลต์คำผิด', excel: 'รายงาน Excel' }[kind]
   const disabled = opening || (job.status !== 'DONE' && kind !== 'original') || (kind === 'highlighted' && !job.finding_count)
   const tone = kind === 'excel'
     ? 'border-green-200 text-[#0f713b] hover:bg-[#ecfdf5]'
@@ -836,100 +1097,6 @@ function HistoryView({ jobs, query, setQuery, setError, onDelete, onFindings }) 
   )
 }
 
-function TextCheckView({ setError }) {
-  const [text, setText] = useState('')
-  const [findings, setFindings] = useState([])
-  const [history, setHistory] = useState(textCheckHistory)
-  const [checking, setChecking] = useState(false)
-  const [hasChecked, setHasChecked] = useState(false)
-  const overLimit = text.length > 500
-
-  async function checkText() {
-    const value = text.trim()
-    if (!value) return setError('กรุณาใส่ข้อความที่ต้องการตรวจ')
-    if (overLimit) return setError('ข้อความยาวเกิน 500 ตัวอักษร')
-    setChecking(true)
-    setError('')
-    try {
-      const nextFindings = await request('/api/text-check', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: value }),
-      })
-      setFindings(nextFindings)
-      const nextHistory = [{ text: value, findings: nextFindings, checkedAt: Date.now() }, ...history.filter(item => item.text !== value)].slice(0, 3)
-      setHistory(nextHistory)
-      saveTextCheckHistory(nextHistory)
-      setHasChecked(true)
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setChecking(false)
-    }
-  }
-
-  return (
-    <Page title="ตรวจข้อความ">
-      <div className="max-w-4xl space-y-5 font-app">
-        <div className="card bg-white p-5 shadow-sm">
-          <label htmlFor="text-check" className="mb-2 block text-sm font-bold text-gray-700">วางหรือพิมพ์ข้อความที่ต้องการตรวจ</label>
-          <textarea
-            id="text-check"
-            value={text}
-            onChange={event => { setText(event.target.value); setHasChecked(false) }}
-            maxLength={501}
-            rows={7}
-            placeholder="เช่น ข้อความอีเมลที่ต้องการตรวจคำผิด..."
-            className="w-full resize-y rounded-xl border border-[var(--border)] bg-white p-3 text-sm font-medium leading-relaxed outline-none transition focus:border-[var(--accent)]"
-            aria-describedby="text-check-count"
-          />
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-            <span id="text-check-count" className={`text-xs font-semibold ${overLimit ? 'text-[var(--error)]' : 'text-gray-400'}`}>{text.length}/500 ตัวอักษร</span>
-            <button className={actionButton} onClick={checkText} disabled={checking || !text.trim() || overLimit}>
-              {checking ? 'กำลังตรวจ...' : 'ตรวจข้อความ'}
-            </button>
-          </div>
-        </div>
-
-        {hasChecked && (
-          <div className="card overflow-hidden bg-white shadow-sm">
-            <table className="hidden w-full border-collapse md:table">
-              <thead>
-                <tr className="border-b border-gray-100 bg-gray-50 text-left text-xs font-semibold text-gray-500">
-                  <th className="px-5 py-3 w-1/4">คำผิดที่พบ</th>
-                  <th className="px-5 py-3 w-1/4">คำแนะนำการแก้ไข</th>
-                  <th className="px-5 py-3">เหตุผลรายละเอียด</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {findings.map(item => <tr key={item.id} className="text-sm hover:bg-gray-50 transition"><td className="px-5 py-4 font-bold text-red-500">{item.found}</td><td className="px-5 py-4 font-bold text-green-600">{item.suggestion}</td><td className="px-5 py-4 text-gray-500 font-semibold">{item.reason}</td></tr>)}
-                {!findings.length && <tr><td className="px-5 py-8 text-center text-sm font-semibold text-gray-400" colSpan="3">ไม่พบรายการคำผิด</td></tr>}
-              </tbody>
-            </table>
-            <div className="divide-y divide-gray-100 md:hidden">
-              {findings.map(item => <div key={item.id} className="p-4 space-y-2"><div className="flex items-center gap-2 text-sm"><span className="font-bold text-red-500 line-through">{item.found}</span><span className="text-xs text-gray-400">→</span><span className="font-extrabold text-green-600">{item.suggestion}</span></div><div className="text-xs text-gray-500 font-semibold">เหตุผล: {item.reason}</div></div>)}
-              {!findings.length && <div className="p-8 text-center text-sm font-semibold text-gray-400">ไม่พบรายการคำผิด</div>}
-            </div>
-          </div>
-        )}
-
-        {history.length > 0 && (
-          <div className="card overflow-hidden bg-white shadow-sm">
-            <div className="border-b border-gray-100 px-5 py-3 text-sm font-bold text-gray-700">ประวัติล่าสุด <span className="text-xs font-semibold text-gray-400">(เก็บ 24 ชั่วโมง)</span></div>
-            <div className="divide-y divide-gray-100">
-              {history.map(item => (
-                <button key={item.checkedAt} className="w-full px-5 py-3 text-left transition hover:bg-gray-50" onClick={() => { setText(item.text); setFindings(item.findings); setHasChecked(true); setError('') }}>
-                  <span className="block truncate text-sm font-semibold text-gray-700">{item.text}</span>
-                  <span className="mt-1 block text-xs font-semibold text-gray-400">พบ {item.findings.length} รายการ · {new Date(item.checkedAt).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-    </Page>
-  )
-}
 
 function FindingsView({ job, setView, setError }) {
   const [findings, setFindings] = useState([])
@@ -1069,6 +1236,83 @@ function Pagination({ page, setPage, total, pageSize = 5, setPageSize }) {
   )
 }
 
+function DownloadResultMenu({ job, setError }) {
+  const buttonRef = useRef(null)
+  const menuRef = useRef(null)
+  const [position, setPosition] = useState(null)
+
+  function close() {
+    setPosition(null)
+  }
+
+  function toggle() {
+    if (position) return close()
+    const rect = buttonRef.current.getBoundingClientRect()
+    const above = window.innerHeight - rect.bottom < 220
+    setPosition({
+      right: Math.max(12, window.innerWidth - rect.right),
+      ...(above ? { bottom: window.innerHeight - rect.top + 8 } : { top: rect.bottom + 8 }),
+    })
+  }
+
+  useEffect(() => {
+    if (!position) return
+    menuRef.current?.querySelector('button:not(:disabled)')?.focus()
+    const outside = (event) => {
+      if (!menuRef.current?.contains(event.target) && !buttonRef.current?.contains(event.target)) close()
+    }
+    const escape = (event) => {
+      if (event.key === 'Escape') {
+        close()
+        buttonRef.current?.focus()
+      }
+    }
+    window.addEventListener('pointerdown', outside)
+    window.addEventListener('keydown', escape)
+    window.addEventListener('resize', close)
+    window.addEventListener('scroll', close, true)
+    return () => {
+      window.removeEventListener('pointerdown', outside)
+      window.removeEventListener('keydown', escape)
+      window.removeEventListener('resize', close)
+      window.removeEventListener('scroll', close, true)
+    }
+  }, [position])
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        className={actionButton}
+        aria-haspopup="menu"
+        aria-expanded={Boolean(position)}
+        onClick={toggle}
+      >
+        <Download size={16} />
+        <span>ดาวน์โหลดผลลัพธ์</span>
+      </button>
+      {position && createPortal(
+        <div
+          ref={menuRef}
+          className="fixed z-[80] w-56 rounded-xl border border-gray-200 bg-white p-1.5 shadow-lg"
+          style={position}
+          role="menu"
+          aria-label={`ดาวน์โหลดผลลัพธ์ ${job.original_filename}`}
+        >
+          <DownloadLink job={job} kind="original" setError={setError} menu onSelect={close} />
+          {job.status === 'DONE' && (
+            <>
+              <DownloadLink job={job} kind="highlighted" setError={setError} menu onSelect={close} />
+              <DownloadLink job={job} kind="excel" setError={setError} menu onSelect={close} />
+            </>
+          )}
+        </div>,
+        document.body,
+      )}
+    </>
+  )
+}
+
 function JobActionMenu({ job, setError, onDelete }) {
   const buttonRef = useRef(null)
   const menuRef = useRef(null)
@@ -1186,7 +1430,7 @@ function JobTable({ jobs, compact = false, setError, onDelete, onFindings }) {
                 <td className="px-5 py-4 font-semibold text-gray-900">
                   <div className="flex items-center">
                     <div className="mr-2 flex items-center justify-center w-7 h-8 bg-red-50 border border-red-100 rounded text-red-500 font-bold text-[8px] relative pt-2 shrink-0 select-none">
-                      <span className="absolute top-0.5 text-[6px] text-red-400 font-semibold">PDF</span>
+                      <span className="absolute top-0.5 text-[6px] text-red-400 font-semibold">{fileExtLabel(job.original_filename)}</span>
                       <FileText size={12} className="mt-1" />
                     </div>
                     <span className="truncate max-w-[200px] lg:max-w-[280px]" title={job.original_filename}>
@@ -1235,7 +1479,7 @@ function JobTable({ jobs, compact = false, setError, onDelete, onFindings }) {
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-center gap-2 overflow-hidden flex-1 min-w-0">
                 <div className="mr-2 flex items-center justify-center w-7 h-8 bg-red-50 border border-red-100 rounded text-red-500 font-bold text-[8px] relative pt-2 shrink-0">
-                  <span className="absolute top-0.5 text-[6px] text-red-400 font-semibold">PDF</span>
+                  <span className="absolute top-0.5 text-[6px] text-red-400 font-semibold">{fileExtLabel(job.original_filename)}</span>
                   <FileText size={12} className="mt-1" />
                 </div>
                 <div className="font-semibold text-gray-900 truncate" title={job.original_filename}>

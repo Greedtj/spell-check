@@ -1,8 +1,12 @@
+import logging
 import time
 
 from .db import SessionLocal
 from .models import Job, JobStatus
 from .pipeline import run_job
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
 
 
 def main():
@@ -21,7 +25,9 @@ def main():
         with SessionLocal() as db:
             job = db.query(Job).filter(Job.status == JobStatus.PENDING.value, Job.is_active == True).order_by(Job.created_at).first()
             if job:
+                logger.info("Picked up job %s (%s)", job.id, job.original_filename)
                 run_job(db, job)
+                logger.info("Job %s finished with status %s", job.id, job.status)
             else:
                 time.sleep(3)
 

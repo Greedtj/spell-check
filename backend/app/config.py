@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     open_router_api_key: str
     openrouter_model: str = "google/gemini-2.5-flash"
 
+    ai_provider: str = "openrouter"
+    copilot_studio_secret: str | None = None
+
     use_pymupdf: bool = True
 
 @lru_cache

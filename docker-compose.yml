@@ -9,6 +9,7 @@ services:
       LOCAL_STORAGE_PATH: /app/tmp
       API_PUBLIC_URL: http://localhost:8010
       USE_PYMUPDF: "true"
+      AI_PROVIDER: ${AI_PROVIDER:-openrouter}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
@@ -24,6 +25,7 @@ services:
     environment:
       LOCAL_STORAGE_PATH: /app/tmp
       USE_PYMUPDF: "true"
+      AI_PROVIDER: ${AI_PROVIDER:-openrouter}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: python -m app.worker
