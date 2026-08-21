@@ -11,7 +11,7 @@ class AuthCallbackTest(TestCase):
     def test_failed_login_returns_to_login(self):
         request = SimpleNamespace(session={"user_id": 1, "oauth_state": "expected"})
         with patch.object(main, "exchange_code", side_effect=HTTPException(401, "denied")):
-            response = main.auth_callback(request, code="bad", state="expected", db=object())
+            response = main.auth_callback(request, code="bad", state="expected", db=MagicMock())
         self.assertEqual(response.status_code, 307)
         self.assertEqual(response.headers["location"], f"{main.settings.frontend_url}?login=failed")
         self.assertEqual(request.session, {})

@@ -42,13 +42,19 @@ class FakeDb:
     def delete(self, job):
         self.deleted = job
 
+    def add(self, _):
+        pass
+
     def commit(self):
         self.committed = True
+
+    def rollback(self):
+        pass
 
 
 class JobApiTest(TestCase):
     def test_pdf_download_is_inline_for_preview(self):
-        job = SimpleNamespace(id="job-1", user_id=7, is_active=True, original_key="jobs/job-1/original.pdf", ocr_key=None, report_key=None, excel_key=None)
+        job = SimpleNamespace(id="job-1", user_id=7, is_active=True, original_filename="doc.pdf", original_key="jobs/job-1/original.pdf", ocr_key=None, report_key=None, excel_key=None)
         with TemporaryDirectory() as tmp:
             path = Path(tmp) / "original.pdf"
             path.touch()
@@ -70,12 +76,14 @@ class JobApiTest(TestCase):
         self.assertEqual(ctx.exception.status_code, 400)
 
     def test_delete_job_deletes_children_first(self):
-        job = SimpleNamespace(id="job-1", user_id=7, status=JobStatus.DONE, is_active=True)
+        job = SimpleNamespace(id="job-1", user_id=7, status=JobStatus.DONE, is_active=True, original_filename="doc.pdf")
         db = FakeDb(job)
 
         with patch.object(main, "delete_file") as delete_file:
             self.assertEqual(main.delete_job("job-1", SimpleNamespace(id=7, is_admin=False), db), {"ok": True})
-        delete_file.assert_called_once_with("jobs/job-1/highlighted.pdf")
+        delete_file.assert_any_call("jobs/job-1/highlighted.pdf")
+        delete_file.assert_any_call("jobs/job-1/highlighted.docx")
+        self.assertEqual(delete_file.call_count, 2)
         self.assertEqual(db.deleted_children, ["SpellcheckFinding"])
         self.assertFalse(job.is_active)
         self.assertTrue(db.committed)
@@ -95,6 +103,7 @@ class JobApiTest(TestCase):
             user_id=7,
             status=JobStatus.DONE,
             is_active=True,
+            original_filename="doc.pdf",
             original_key="jobs/job-1/original.pdf",
         )
         finding = SimpleNamespace(found="wrong", suggestion="right", page="1", reason="spelling")
@@ -119,7 +128,7 @@ class JobApiTest(TestCase):
         self.assertEqual(upload_file.call_args.args[3]["matched-findings"], 1)
 
     def test_highlight_download_reuses_cached_coverage(self):
-        job = SimpleNamespace(id="job-1", user_id=7, status=JobStatus.DONE, is_active=True)
+        job = SimpleNamespace(id="job-1", user_id=7, status=JobStatus.DONE, is_active=True, original_filename="doc.pdf")
         db = FakeDb(job)
         metadata = {"annotations": "8", "matched-findings": "3", "total-findings": "5"}
 
